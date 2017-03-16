@@ -76,10 +76,10 @@ $(function () {
 	function setThemeState() {
 		// set theme type
 		if (themeSettings.themeName) {
-			$styleLink.attr('href', 'css/app-' + themeSettings.themeName + '.css');
+			$styleLink.attr('href', '/admin/css/app-' + themeSettings.themeName + '.min.css');
 		}
 		else {
-			$styleLink.attr('href', 'css/app.css');
+            $styleLink.attr('href', '/admin/css/app.min.css');
 		}
 
 		// App classes
