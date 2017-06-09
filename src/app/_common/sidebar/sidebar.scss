@@ -41,6 +41,8 @@
 	.nav {
 
 		font-size: 14px;
+        display: flex;
+        flex-direction:column;
 
 		// Common styles
 		li {
