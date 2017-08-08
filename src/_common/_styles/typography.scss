@@ -58,3 +58,7 @@ pre {
 	border: none;
 	background: none;
 }
+
+.has-error.field-validation-error {
+    color: $color-danger;
+}
