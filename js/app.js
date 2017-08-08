@@ -49,6 +49,42 @@ config.chart = {};
 
 config.chart.colorPrimary = tinycolor($ref.find(".chart .color-primary").css("color"));
 config.chart.colorSecondary = tinycolor($ref.find(".chart .color-secondary").css("color"));
+// SOURCE: https://xhalent.wordpress.com/2011/01/24/applying-unobtrusive-validation-to-dynamic-content/
+
+(function ($) {
+  $.validator.unobtrusive.parseDynamicContent = function (selector) {
+    //use the normal unobstrusive.parse method
+    $.validator.unobtrusive.parse(selector);
+ 
+    //get the relevant form
+    var form = $(selector).first().closest('form');
+   
+    //get the collections of unobstrusive validators, and jquery validators
+    //and compare the two
+    var unobtrusiveValidation = form.data('unobtrusiveValidation');
+    var validator = form.validate();
+ 
+    $.each(unobtrusiveValidation.options.rules, function (elname, elrules) {
+      if (validator.settings.rules[elname] == undefined) {
+        var args = {};
+        $.extend(args, elrules);
+        args.messages = unobtrusiveValidation.options.messages[elname];
+        //edit:use quoted strings for the name selector
+        $("[name='" + elname + "']").rules("add", args);
+      } else {
+        $.each(elrules, function (rulename, data) {
+          if (validator.settings.rules[elname][rulename] == undefined) {
+            var args = {};
+            args[rulename] = data;
+            args.messages = unobtrusiveValidation.options.messages[elname][rulename];
+            //edit:use quoted strings for the name selector
+            $("[name='" + elname + "']").rules("add", args);
+          }
+        });
+      }
+    });
+  }
+})($);
 $(function() {
 	animate({
 		name: 'flipInY',
@@ -101,37 +137,6 @@ $(function() {
 	$.extend(loginValidationSettings, config.validations);
 
     $('#login-form').validate(loginValidationSettings);
-})
-//ResetForm validation
-$(function() {
-	if (!$('#reset-form').length) {
-        return false;
-    }
-
-    var resetValidationSettings = {
-	    rules: {
-	        email1: {
-	            required: true,
-	            email: true
-	        }
-	    },
-	    messages: {
-	        email1: {
-	            required: "Please enter email address",
-	            email: "Please enter a valid email address"
-	        }
-	    },
-	    invalidHandler: function() {
-			animate({
-				name: 'shake',
-				selector: '.auth-container > .card'
-			});
-		}
-	}
-
-	$.extend(resetValidationSettings, config.validations);
-
-    $('#reset-form').validate(resetValidationSettings);
 })
 //SignupForm validation
 $(function() {
@@ -221,6 +226,37 @@ $(function() {
 
     $('#signup-form').validate(signupValidationSettings);
 });
+//ResetForm validation
+$(function() {
+	if (!$('#reset-form').length) {
+        return false;
+    }
+
+    var resetValidationSettings = {
+	    rules: {
+	        email1: {
+	            required: true,
+	            email: true
+	        }
+	    },
+	    messages: {
+	        email1: {
+	            required: "Please enter email address",
+	            email: "Please enter a valid email address"
+	        }
+	    },
+	    invalidHandler: function() {
+			animate({
+				name: 'shake',
+				selector: '.auth-container > .card'
+			});
+		}
+	}
+
+	$.extend(resetValidationSettings, config.validations);
+
+    $('#reset-form').validate(resetValidationSettings);
+})
 /***********************************************
 *        Animation Settings
 ***********************************************/
@@ -954,43 +990,6 @@ $(function() {
 });
 $(function() {
 
-    var $dashboardSalesBreakdownChart = $('#dashboard-sales-breakdown-chart');
-
-    if (!$dashboardSalesBreakdownChart.length) {
-        return false;
-    } 
-
-    function drawSalesChart(){
-
-    $dashboardSalesBreakdownChart.empty();
-
-        Morris.Donut({
-            element: 'dashboard-sales-breakdown-chart',
-            data: [{ label: "Download Sales", value: 12 },
-                { label: "In-Store Sales", value: 30 },
-                { label: "Mail-Order Sales", value: 20 } ],
-            resize: true,
-            colors: [
-                tinycolor(config.chart.colorPrimary.toString()).lighten(10).toString(),
-                tinycolor(config.chart.colorPrimary.toString()).darken(8).toString(),
-                config.chart.colorPrimary.toString()
-            ],
-        });
-
-        var $sameheightContainer = $dashboardSalesBreakdownChart.closest(".sameheight-container");
-
-        setSameHeights($sameheightContainer);
-    }
-
-    drawSalesChart();
-
-    $(document).on("themechange", function(){
-       drawSalesChart();
-    });
-    
-})
-$(function() {
-
     var $dashboardSalesMap = $('#dashboard-sales-map');
 
     if (!$dashboardSalesMap.length) {
@@ -1041,6 +1040,43 @@ $(function() {
 });
 $(function() {
 
+    var $dashboardSalesBreakdownChart = $('#dashboard-sales-breakdown-chart');
+
+    if (!$dashboardSalesBreakdownChart.length) {
+        return false;
+    } 
+
+    function drawSalesChart(){
+
+    $dashboardSalesBreakdownChart.empty();
+
+        Morris.Donut({
+            element: 'dashboard-sales-breakdown-chart',
+            data: [{ label: "Download Sales", value: 12 },
+                { label: "In-Store Sales", value: 30 },
+                { label: "Mail-Order Sales", value: 20 } ],
+            resize: true,
+            colors: [
+                tinycolor(config.chart.colorPrimary.toString()).lighten(10).toString(),
+                tinycolor(config.chart.colorPrimary.toString()).darken(8).toString(),
+                config.chart.colorPrimary.toString()
+            ],
+        });
+
+        var $sameheightContainer = $dashboardSalesBreakdownChart.closest(".sameheight-container");
+
+        setSameHeights($sameheightContainer);
+    }
+
+    drawSalesChart();
+
+    $(document).on("themechange", function(){
+       drawSalesChart();
+    });
+    
+})
+$(function() {
+
 	$('.actions-list > li').on('click', '.check', function(e){
 		e.preventDefault();
 
@@ -1051,6 +1087,20 @@ $(function() {
 		removeActionList();
 	});
 
+});
+//LoginForm validation
+$(function() {
+	if (!$('.form-control').length) {
+        return false;
+    }
+
+    $('.form-control').focus(function() {
+		$(this).siblings('.input-group-addon').addClass('focus');
+	});
+
+	$('.form-control').blur(function() {
+		$(this).siblings('.input-group-addon').removeClass('focus');
+	});
 });
 $(function(){
 
@@ -1129,20 +1179,6 @@ $(function() {
         drawItemsListSparklines();
     });
 
-});
-//LoginForm validation
-$(function() {
-	if (!$('.form-control').length) {
-        return false;
-    }
-
-    $('.form-control').focus(function() {
-		$(this).siblings('.input-group-addon').addClass('focus');
-	});
-
-	$('.form-control').blur(function() {
-		$(this).siblings('.input-group-addon').removeClass('focus');
-	});
 });
 $(function() {
 
@@ -1294,10 +1330,10 @@ $(function () {
 	function setThemeState() {
 		// set theme type
 		if (themeSettings.themeName) {
-			$styleLink.attr('href', 'css/app-' + themeSettings.themeName + '.css');
+			$styleLink.attr('href', '/admin/css/app-' + themeSettings.themeName + '.min.css');
 		}
 		else {
-			$styleLink.attr('href', 'css/app.css');
+            $styleLink.attr('href', '/admin/css/app.min.css');
 		}
 
 		// App classes

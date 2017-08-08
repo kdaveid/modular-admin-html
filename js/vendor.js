@@ -9209,7 +9209,7 @@ return jQuery;
 
 }));
 
-/*! tether 1.3.9 */
+/*! tether 1.4.0 */
 
 (function(root, factory) {
   if (typeof define === 'function' && define.amd) {
@@ -10458,20 +10458,24 @@ var TetherClass = (function (_Evented) {
       }
 
       if (!moved) {
-        var offsetParentIsBody = true;
-        var currentNode = this.element.parentNode;
-        while (currentNode && currentNode.nodeType === 1 && currentNode.tagName !== 'BODY') {
-          if (getComputedStyle(currentNode).position !== 'static') {
-            offsetParentIsBody = false;
-            break;
+        if (this.options.bodyElement) {
+          this.options.bodyElement.appendChild(this.element);
+        } else {
+          var offsetParentIsBody = true;
+          var currentNode = this.element.parentNode;
+          while (currentNode && currentNode.nodeType === 1 && currentNode.tagName !== 'BODY') {
+            if (getComputedStyle(currentNode).position !== 'static') {
+              offsetParentIsBody = false;
+              break;
+            }
+
+            currentNode = currentNode.parentNode;
           }
 
-          currentNode = currentNode.parentNode;
-        }
-
-        if (!offsetParentIsBody) {
-          this.element.parentNode.removeChild(this.element);
-          this.element.ownerDocument.body.appendChild(this.element);
+          if (!offsetParentIsBody) {
+            this.element.parentNode.removeChild(this.element);
+            this.element.ownerDocument.body.appendChild(this.element);
+          }
         }
       }
 
@@ -20558,6 +20562,422 @@ if ( $.ajaxPrefilter ) {
 
 }))}(document, Math));
 
+/*!
+** Unobtrusive validation support library for jQuery and jQuery Validate
+** Copyright (C) Microsoft Corporation. All rights reserved.
+*/
+
+/*jslint white: true, browser: true, onevar: true, undef: true, nomen: true, eqeqeq: true, plusplus: true, bitwise: true, regexp: true, newcap: true, immed: true, strict: false */
+/*global document: false, jQuery: false */
+
+(function ($) {
+    var $jQval = $.validator,
+        adapters,
+        data_validation = "unobtrusiveValidation";
+
+    function setValidationValues(options, ruleName, value) {
+        options.rules[ruleName] = value;
+        if (options.message) {
+            options.messages[ruleName] = options.message;
+        }
+    }
+
+    function splitAndTrim(value) {
+        return value.replace(/^\s+|\s+$/g, "").split(/\s*,\s*/g);
+    }
+
+    function escapeAttributeValue(value) {
+        // As mentioned on http://api.jquery.com/category/selectors/
+        return value.replace(/([!"#$%&'()*+,./:;<=>?@\[\\\]^`{|}~])/g, "\\$1");
+    }
+
+    function getModelPrefix(fieldName) {
+        return fieldName.substr(0, fieldName.lastIndexOf(".") + 1);
+    }
+
+    function appendModelPrefix(value, prefix) {
+        if (value.indexOf("*.") === 0) {
+            value = value.replace("*.", prefix);
+        }
+        return value;
+    }
+
+    function onError(error, inputElement) {  // 'this' is the form element
+        var container = $(this).find("[data-valmsg-for='" + escapeAttributeValue(inputElement[0].name) + "']"),
+            replaceAttrValue = container.attr("data-valmsg-replace"),
+            replace = replaceAttrValue ? $.parseJSON(replaceAttrValue) !== false : null;
+
+        container.removeClass("field-validation-valid").addClass("field-validation-error");
+        error.data("unobtrusiveContainer", container);
+
+        if (replace) {
+            container.empty();
+            error.removeClass("input-validation-error").appendTo(container);
+        }
+        else {
+            error.hide();
+        }
+    }
+
+    function onErrors(event, validator) {  // 'this' is the form element
+        var container = $(this).find("[data-valmsg-summary=true]"),
+            list = container.find("ul");
+
+        if (list && list.length && validator.errorList.length) {
+            list.empty();
+            container.addClass("validation-summary-errors").removeClass("validation-summary-valid");
+
+            $.each(validator.errorList, function () {
+                $("<li />").html(this.message).appendTo(list);
+            });
+        }
+    }
+
+    function onSuccess(error) {  // 'this' is the form element
+        var container = error.data("unobtrusiveContainer");
+
+        if (container) {
+            var replaceAttrValue = container.attr("data-valmsg-replace"),
+                replace = replaceAttrValue ? $.parseJSON(replaceAttrValue) : null;
+
+            container.addClass("field-validation-valid").removeClass("field-validation-error");
+            error.removeData("unobtrusiveContainer");
+
+            if (replace) {
+                container.empty();
+            }
+        }
+    }
+
+    function onReset(event) {  // 'this' is the form element
+        var $form = $(this),
+            key = '__jquery_unobtrusive_validation_form_reset';
+        if ($form.data(key)) {
+            return;
+        }
+        // Set a flag that indicates we're currently resetting the form.
+        $form.data(key, true);
+        try {
+            $form.data("validator").resetForm();
+        } finally {
+            $form.removeData(key);
+        }
+
+        $form.find(".validation-summary-errors")
+            .addClass("validation-summary-valid")
+            .removeClass("validation-summary-errors");
+        $form.find(".field-validation-error")
+            .addClass("field-validation-valid")
+            .removeClass("field-validation-error")
+            .removeData("unobtrusiveContainer")
+            .find(">*")  // If we were using valmsg-replace, get the underlying error
+                .removeData("unobtrusiveContainer");
+    }
+
+    function validationInfo(form) {
+        var $form = $(form),
+            result = $form.data(data_validation),
+            onResetProxy = $.proxy(onReset, form),
+            defaultOptions = $jQval.unobtrusive.options || {},
+            execInContext = function (name, args) {
+                var func = defaultOptions[name];
+                func && $.isFunction(func) && func.apply(form, args);
+            }
+
+        if (!result) {
+            result = {
+                options: {  // options structure passed to jQuery Validate's validate() method
+                    errorClass: defaultOptions.errorClass || "input-validation-error",
+                    errorElement: defaultOptions.errorElement || "span",
+                    errorPlacement: function () {
+                        onError.apply(form, arguments);
+                        execInContext("errorPlacement", arguments);
+                    },
+                    invalidHandler: function () {
+                        onErrors.apply(form, arguments);
+                        execInContext("invalidHandler", arguments);
+                    },
+                    messages: {},
+                    rules: {},
+                    success: function () {
+                        onSuccess.apply(form, arguments);
+                        execInContext("success", arguments);
+                    }
+                },
+                attachValidation: function () {
+                    $form
+                        .off("reset." + data_validation, onResetProxy)
+                        .on("reset." + data_validation, onResetProxy)
+                        .validate(this.options);
+                },
+                validate: function () {  // a validation function that is called by unobtrusive Ajax
+                    $form.validate();
+                    return $form.valid();
+                }
+            };
+            $form.data(data_validation, result);
+        }
+
+        return result;
+    }
+
+    $jQval.unobtrusive = {
+        adapters: [],
+
+        parseElement: function (element, skipAttach) {
+            /// <summary>
+            /// Parses a single HTML element for unobtrusive validation attributes.
+            /// </summary>
+            /// <param name="element" domElement="true">The HTML element to be parsed.</param>
+            /// <param name="skipAttach" type="Boolean">[Optional] true to skip attaching the
+            /// validation to the form. If parsing just this single element, you should specify true.
+            /// If parsing several elements, you should specify false, and manually attach the validation
+            /// to the form when you are finished. The default is false.</param>
+            var $element = $(element),
+                form = $element.parents("form")[0],
+                valInfo, rules, messages;
+
+            if (!form) {  // Cannot do client-side validation without a form
+                return;
+            }
+
+            valInfo = validationInfo(form);
+            valInfo.options.rules[element.name] = rules = {};
+            valInfo.options.messages[element.name] = messages = {};
+
+            $.each(this.adapters, function () {
+                var prefix = "data-val-" + this.name,
+                    message = $element.attr(prefix),
+                    paramValues = {};
+
+                if (message !== undefined) {  // Compare against undefined, because an empty message is legal (and falsy)
+                    prefix += "-";
+
+                    $.each(this.params, function () {
+                        paramValues[this] = $element.attr(prefix + this);
+                    });
+
+                    this.adapt({
+                        element: element,
+                        form: form,
+                        message: message,
+                        params: paramValues,
+                        rules: rules,
+                        messages: messages
+                    });
+                }
+            });
+
+            $.extend(rules, { "__dummy__": true });
+
+            if (!skipAttach) {
+                valInfo.attachValidation();
+            }
+        },
+
+        parse: function (selector) {
+            /// <summary>
+            /// Parses all the HTML elements in the specified selector. It looks for input elements decorated
+            /// with the [data-val=true] attribute value and enables validation according to the data-val-*
+            /// attribute values.
+            /// </summary>
+            /// <param name="selector" type="String">Any valid jQuery selector.</param>
+
+            // $forms includes all forms in selector's DOM hierarchy (parent, children and self) that have at least one
+            // element with data-val=true
+            var $selector = $(selector),
+                $forms = $selector.parents()
+                                  .addBack()
+                                  .filter("form")
+                                  .add($selector.find("form"))
+                                  .has("[data-val=true]");
+
+            $selector.find("[data-val=true]").each(function () {
+                $jQval.unobtrusive.parseElement(this, true);
+            });
+
+            $forms.each(function () {
+                var info = validationInfo(this);
+                if (info) {
+                    info.attachValidation();
+                }
+            });
+        }
+    };
+
+    adapters = $jQval.unobtrusive.adapters;
+
+    adapters.add = function (adapterName, params, fn) {
+        /// <summary>Adds a new adapter to convert unobtrusive HTML into a jQuery Validate validation.</summary>
+        /// <param name="adapterName" type="String">The name of the adapter to be added. This matches the name used
+        /// in the data-val-nnnn HTML attribute (where nnnn is the adapter name).</param>
+        /// <param name="params" type="Array" optional="true">[Optional] An array of parameter names (strings) that will
+        /// be extracted from the data-val-nnnn-mmmm HTML attributes (where nnnn is the adapter name, and
+        /// mmmm is the parameter name).</param>
+        /// <param name="fn" type="Function">The function to call, which adapts the values from the HTML
+        /// attributes into jQuery Validate rules and/or messages.</param>
+        /// <returns type="jQuery.validator.unobtrusive.adapters" />
+        if (!fn) {  // Called with no params, just a function
+            fn = params;
+            params = [];
+        }
+        this.push({ name: adapterName, params: params, adapt: fn });
+        return this;
+    };
+
+    adapters.addBool = function (adapterName, ruleName) {
+        /// <summary>Adds a new adapter to convert unobtrusive HTML into a jQuery Validate validation, where
+        /// the jQuery Validate validation rule has no parameter values.</summary>
+        /// <param name="adapterName" type="String">The name of the adapter to be added. This matches the name used
+        /// in the data-val-nnnn HTML attribute (where nnnn is the adapter name).</param>
+        /// <param name="ruleName" type="String" optional="true">[Optional] The name of the jQuery Validate rule. If not provided, the value
+        /// of adapterName will be used instead.</param>
+        /// <returns type="jQuery.validator.unobtrusive.adapters" />
+        return this.add(adapterName, function (options) {
+            setValidationValues(options, ruleName || adapterName, true);
+        });
+    };
+
+    adapters.addMinMax = function (adapterName, minRuleName, maxRuleName, minMaxRuleName, minAttribute, maxAttribute) {
+        /// <summary>Adds a new adapter to convert unobtrusive HTML into a jQuery Validate validation, where
+        /// the jQuery Validate validation has three potential rules (one for min-only, one for max-only, and
+        /// one for min-and-max). The HTML parameters are expected to be named -min and -max.</summary>
+        /// <param name="adapterName" type="String">The name of the adapter to be added. This matches the name used
+        /// in the data-val-nnnn HTML attribute (where nnnn is the adapter name).</param>
+        /// <param name="minRuleName" type="String">The name of the jQuery Validate rule to be used when you only
+        /// have a minimum value.</param>
+        /// <param name="maxRuleName" type="String">The name of the jQuery Validate rule to be used when you only
+        /// have a maximum value.</param>
+        /// <param name="minMaxRuleName" type="String">The name of the jQuery Validate rule to be used when you
+        /// have both a minimum and maximum value.</param>
+        /// <param name="minAttribute" type="String" optional="true">[Optional] The name of the HTML attribute that
+        /// contains the minimum value. The default is "min".</param>
+        /// <param name="maxAttribute" type="String" optional="true">[Optional] The name of the HTML attribute that
+        /// contains the maximum value. The default is "max".</param>
+        /// <returns type="jQuery.validator.unobtrusive.adapters" />
+        return this.add(adapterName, [minAttribute || "min", maxAttribute || "max"], function (options) {
+            var min = options.params.min,
+                max = options.params.max;
+
+            if (min && max) {
+                setValidationValues(options, minMaxRuleName, [min, max]);
+            }
+            else if (min) {
+                setValidationValues(options, minRuleName, min);
+            }
+            else if (max) {
+                setValidationValues(options, maxRuleName, max);
+            }
+        });
+    };
+
+    adapters.addSingleVal = function (adapterName, attribute, ruleName) {
+        /// <summary>Adds a new adapter to convert unobtrusive HTML into a jQuery Validate validation, where
+        /// the jQuery Validate validation rule has a single value.</summary>
+        /// <param name="adapterName" type="String">The name of the adapter to be added. This matches the name used
+        /// in the data-val-nnnn HTML attribute(where nnnn is the adapter name).</param>
+        /// <param name="attribute" type="String">[Optional] The name of the HTML attribute that contains the value.
+        /// The default is "val".</param>
+        /// <param name="ruleName" type="String" optional="true">[Optional] The name of the jQuery Validate rule. If not provided, the value
+        /// of adapterName will be used instead.</param>
+        /// <returns type="jQuery.validator.unobtrusive.adapters" />
+        return this.add(adapterName, [attribute || "val"], function (options) {
+            setValidationValues(options, ruleName || adapterName, options.params[attribute]);
+        });
+    };
+
+    $jQval.addMethod("__dummy__", function (value, element, params) {
+        return true;
+    });
+
+    $jQval.addMethod("regex", function (value, element, params) {
+        var match;
+        if (this.optional(element)) {
+            return true;
+        }
+
+        match = new RegExp(params).exec(value);
+        return (match && (match.index === 0) && (match[0].length === value.length));
+    });
+
+    $jQval.addMethod("nonalphamin", function (value, element, nonalphamin) {
+        var match;
+        if (nonalphamin) {
+            match = value.match(/\W/g);
+            match = match && match.length >= nonalphamin;
+        }
+        return match;
+    });
+
+    if ($jQval.methods.extension) {
+        adapters.addSingleVal("accept", "mimtype");
+        adapters.addSingleVal("extension", "extension");
+    } else {
+        // for backward compatibility, when the 'extension' validation method does not exist, such as with versions
+        // of JQuery Validation plugin prior to 1.10, we should use the 'accept' method for
+        // validating the extension, and ignore mime-type validations as they are not supported.
+        adapters.addSingleVal("extension", "extension", "accept");
+    }
+
+    adapters.addSingleVal("regex", "pattern");
+    adapters.addBool("creditcard").addBool("date").addBool("digits").addBool("email").addBool("number").addBool("url");
+    adapters.addMinMax("length", "minlength", "maxlength", "rangelength").addMinMax("range", "min", "max", "range");
+    adapters.addMinMax("minlength", "minlength").addMinMax("maxlength", "minlength", "maxlength");
+    adapters.add("equalto", ["other"], function (options) {
+        var prefix = getModelPrefix(options.element.name),
+            other = options.params.other,
+            fullOtherName = appendModelPrefix(other, prefix),
+            element = $(options.form).find(":input").filter("[name='" + escapeAttributeValue(fullOtherName) + "']")[0];
+
+        setValidationValues(options, "equalTo", element);
+    });
+    adapters.add("required", function (options) {
+        // jQuery Validate equates "required" with "mandatory" for checkbox elements
+        if (options.element.tagName.toUpperCase() !== "INPUT" || options.element.type.toUpperCase() !== "CHECKBOX") {
+            setValidationValues(options, "required", true);
+        }
+    });
+    adapters.add("remote", ["url", "type", "additionalfields"], function (options) {
+        var value = {
+            url: options.params.url,
+            type: options.params.type || "GET",
+            data: {}
+        },
+            prefix = getModelPrefix(options.element.name);
+
+        $.each(splitAndTrim(options.params.additionalfields || options.element.name), function (i, fieldName) {
+            var paramName = appendModelPrefix(fieldName, prefix);
+            value.data[paramName] = function () {
+                var field = $(options.form).find(":input").filter("[name='" + escapeAttributeValue(paramName) + "']");
+                // For checkboxes and radio buttons, only pick up values from checked fields.
+                if (field.is(":checkbox")) {
+                    return field.filter(":checked").val() || field.filter(":hidden").val() || '';
+                }
+                else if (field.is(":radio")) {
+                    return field.filter(":checked").val() || '';
+                }
+                return field.val();
+            };
+        });
+
+        setValidationValues(options, "remote", value);
+    });
+    adapters.add("password", ["min", "nonalphamin", "regex"], function (options) {
+        if (options.params.min) {
+            setValidationValues(options, "minlength", options.params.min);
+        }
+        if (options.params.nonalphamin) {
+            setValidationValues(options, "nonalphamin", options.params.nonalphamin);
+        }
+        if (options.params.regex) {
+            setValidationValues(options, "regex", options.params.regex);
+        }
+    });
+
+    $(function () {
+        $jQval.unobtrusive.parse(document);
+    });
+}(jQuery));
 /*!
  * JQVMap: jQuery Vector Map Library
  * @author JQVMap
@@ -39810,8 +40230,7 @@ module.exports = SnowTheme;
  * @license MIT
  */
 
-
-(function (factory) {
+(function sortableModule(factory) {
 	"use strict";
 
 	if (typeof define === "function" && define.amd) {
@@ -39820,15 +40239,18 @@ module.exports = SnowTheme;
 	else if (typeof module != "undefined" && typeof module.exports != "undefined") {
 		module.exports = factory();
 	}
-	else if (typeof Package !== "undefined") {
-		Sortable = factory();  // export for Meteor.js
-	}
 	else {
 		/* jshint sub:true */
 		window["Sortable"] = factory();
 	}
-})(function () {
+})(function sortableFactory() {
 	"use strict";
+
+	if (typeof window == "undefined" || !window.document) {
+		return function sortableError() {
+			throw new Error("Sortable.js requires a window with a document");
+		};
+	}
 
 	var dragEl,
 		parentEl,
@@ -39836,9 +40258,11 @@ module.exports = SnowTheme;
 		cloneEl,
 		rootEl,
 		nextEl,
+		lastDownEl,
 
 		scrollEl,
 		scrollParentEl,
+		scrollCustomFn,
 
 		lastEl,
 		lastCSS,
@@ -39848,6 +40272,8 @@ module.exports = SnowTheme;
 		newIndex,
 
 		activeGroup,
+		putSortable,
+
 		autoScroll = {},
 
 		tapEvt,
@@ -39856,7 +40282,8 @@ module.exports = SnowTheme;
 		moved,
 
 		/** @const */
-		RSPACE = /\s+/g,
+		R_SPACE = /\s+/g,
+		R_FLOAT = /left|right|inline/,
 
 		expando = 'Sortable' + (new Date).getTime(),
 
@@ -39864,8 +40291,17 @@ module.exports = SnowTheme;
 		document = win.document,
 		parseInt = win.parseInt,
 
+		$ = win.jQuery || win.Zepto,
+		Polymer = win.Polymer,
+
+		captureMode = false,
+
 		supportDraggable = !!('draggable' in document.createElement('div')),
 		supportCssPointerEvents = (function (el) {
+			// false when IE11
+			if (!!navigator.userAgent.match(/Trident.*rv[ :]?11\./)) {
+				return false;
+			}
 			el = document.createElement('x');
 			el.style.cssText = 'pointer-events:auto';
 			return el.style.pointerEvents === 'auto';
@@ -39874,14 +40310,16 @@ module.exports = SnowTheme;
 		_silent = false,
 
 		abs = Math.abs,
-		slice = [].slice,
+		min = Math.min,
 
+		savedInputChecked = [],
 		touchDragOverListeners = [],
 
 		_autoScroll = _throttle(function (/**Event*/evt, /**Object*/options, /**HTMLElement*/rootEl) {
 			// Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=505521
 			if (rootEl && options.scroll) {
-				var el,
+				var _this = rootEl[expando],
+					el,
 					rect,
 					sens = options.scrollSensitivity,
 					speed = options.scrollSpeed,
@@ -39893,13 +40331,17 @@ module.exports = SnowTheme;
 					winHeight = window.innerHeight,
 
 					vx,
-					vy
+					vy,
+
+					scrollOffsetX,
+					scrollOffsetY
 				;
 
 				// Delect scrollEl
 				if (scrollParentEl !== rootEl) {
 					scrollEl = options.scroll;
 					scrollParentEl = rootEl;
+					scrollCustomFn = options.scrollFn;
 
 					if (scrollEl === true) {
 						scrollEl = rootEl;
@@ -39941,11 +40383,18 @@ module.exports = SnowTheme;
 
 					if (el) {
 						autoScroll.pid = setInterval(function () {
+							scrollOffsetY = vy ? vy * speed : 0;
+							scrollOffsetX = vx ? vx * speed : 0;
+
+							if ('function' === typeof(scrollCustomFn)) {
+								return scrollCustomFn.call(_this, scrollOffsetX, scrollOffsetY, evt);
+							}
+
 							if (el === win) {
-								win.scrollTo(win.pageXOffset + vx * speed, win.pageYOffset + vy * speed);
+								win.scrollTo(win.pageXOffset + scrollOffsetX, win.pageYOffset + scrollOffsetY);
 							} else {
-								vy && (el.scrollTop += vy * speed);
-								vx && (el.scrollLeft += vx * speed);
+								el.scrollTop += scrollOffsetY;
+								el.scrollLeft += scrollOffsetX;
 							}
 						}, 24);
 					}
@@ -39954,22 +40403,42 @@ module.exports = SnowTheme;
 		}, 30),
 
 		_prepareGroup = function (options) {
-			var group = options.group;
+			function toFn(value, pull) {
+				if (value === void 0 || value === true) {
+					value = group.name;
+				}
 
-			if (!group || typeof group != 'object') {
-				group = options.group = {name: group};
+				if (typeof value === 'function') {
+					return value;
+				} else {
+					return function (to, from) {
+						var fromGroup = from.options.group.name;
+
+						return pull
+							? value
+							: value && (value.join
+								? value.indexOf(fromGroup) > -1
+								: (fromGroup == value)
+							);
+					};
+				}
 			}
 
-			['pull', 'put'].forEach(function (key) {
-				if (!(key in group)) {
-					group[key] = true;
-				}
-			});
+			var group = {};
+			var originalGroup = options.group;
 
-			options.groups = ' ' + group.name + (group.put.join ? ' ' + group.put.join(' ') : '') + ' ';
+			if (!originalGroup || typeof originalGroup != 'object') {
+				originalGroup = {name: originalGroup};
+			}
+
+			group.name = originalGroup.name;
+			group.checkPull = toFn(originalGroup.pull, true);
+			group.checkPut = toFn(originalGroup.put);
+			group.revertClone = originalGroup.revertClone;
+
+			options.group = group;
 		}
 	;
-
 
 
 	/**
@@ -39989,7 +40458,6 @@ module.exports = SnowTheme;
 		// Export instance
 		el[expando] = this;
 
-
 		// Default options
 		var defaults = {
 			group: Math.random(),
@@ -40003,8 +40471,10 @@ module.exports = SnowTheme;
 			draggable: /[uo]l/i.test(el.nodeName) ? 'li' : '>*',
 			ghostClass: 'sortable-ghost',
 			chosenClass: 'sortable-chosen',
+			dragClass: 'sortable-drag',
 			ignore: 'a, img',
 			filter: null,
+			preventOnFilter: true,
 			animation: 0,
 			setData: function (dataTransfer, dragEl) {
 				dataTransfer.setData('Text', dragEl.textContent);
@@ -40015,7 +40485,9 @@ module.exports = SnowTheme;
 			delay: 0,
 			forceFallback: false,
 			fallbackClass: 'sortable-fallback',
-			fallbackOnBody: false
+			fallbackOnBody: false,
+			fallbackTolerance: 0,
+			fallbackOffset: {x: 0, y: 0}
 		};
 
 
@@ -40028,7 +40500,7 @@ module.exports = SnowTheme;
 
 		// Bind all private methods
 		for (var fn in this) {
-			if (fn.charAt(0) === '_') {
+			if (fn.charAt(0) === '_' && typeof this[fn] === 'function') {
 				this[fn] = this[fn].bind(this);
 			}
 		}
@@ -40039,6 +40511,7 @@ module.exports = SnowTheme;
 		// Bind events
 		_on(el, 'mousedown', this._onTapStart);
 		_on(el, 'touchstart', this._onTapStart);
+		_on(el, 'pointerdown', this._onTapStart);
 
 		if (this.nativeDraggable) {
 			_on(el, 'dragover', this);
@@ -40059,16 +40532,26 @@ module.exports = SnowTheme;
 			var _this = this,
 				el = this.el,
 				options = this.options,
+				preventOnFilter = options.preventOnFilter,
 				type = evt.type,
 				touch = evt.touches && evt.touches[0],
 				target = (touch || evt).target,
-				originalTarget = target,
-				filter = options.filter;
+				originalTarget = evt.target.shadowRoot && evt.path[0] || target,
+				filter = options.filter,
+				startIndex;
 
+			_saveInputCheckedState(el);
+
+
+			// Don't trigger start event when an element is been dragged, otherwise the evt.oldindex always wrong when set option.group.
+			if (dragEl) {
+				return;
+			}
 
 			if (type === 'mousedown' && evt.button !== 0 || options.disabled) {
 				return; // only left button or enabled
 			}
+
 
 			target = _closest(target, options.draggable, el);
 
@@ -40076,14 +40559,19 @@ module.exports = SnowTheme;
 				return;
 			}
 
-			// get the index of the dragged element within its parent
-			oldIndex = _index(target);
+			if (lastDownEl === target) {
+				// Ignoring duplicate `down`
+				return;
+			}
+
+			// Get the index of the dragged element within its parent
+			startIndex = _index(target, options.draggable);
 
 			// Check filter
 			if (typeof filter === 'function') {
 				if (filter.call(this, evt, target, this)) {
-					_dispatchEvent(_this, originalTarget, 'filter', target, el, oldIndex);
-					evt.preventDefault();
+					_dispatchEvent(_this, originalTarget, 'filter', target, el, startIndex);
+					preventOnFilter && evt.preventDefault();
 					return; // cancel dnd
 				}
 			}
@@ -40092,28 +40580,26 @@ module.exports = SnowTheme;
 					criteria = _closest(originalTarget, criteria.trim(), el);
 
 					if (criteria) {
-						_dispatchEvent(_this, criteria, 'filter', target, el, oldIndex);
+						_dispatchEvent(_this, criteria, 'filter', target, el, startIndex);
 						return true;
 					}
 				});
 
 				if (filter) {
-					evt.preventDefault();
+					preventOnFilter && evt.preventDefault();
 					return; // cancel dnd
 				}
 			}
-
 
 			if (options.handle && !_closest(originalTarget, options.handle, el)) {
 				return;
 			}
 
-
 			// Prepare `dragstart`
-			this._prepareDragStart(evt, touch, target);
+			this._prepareDragStart(evt, touch, target, startIndex);
 		},
 
-		_prepareDragStart: function (/** Event */evt, /** Touch */touch, /** HTMLElement */target) {
+		_prepareDragStart: function (/** Event */evt, /** Touch */touch, /** HTMLElement */target, /** Number */startIndex) {
 			var _this = this,
 				el = _this.el,
 				options = _this.options,
@@ -40127,7 +40613,14 @@ module.exports = SnowTheme;
 				dragEl = target;
 				parentEl = dragEl.parentNode;
 				nextEl = dragEl.nextSibling;
+				lastDownEl = target;
 				activeGroup = options.group;
+				oldIndex = startIndex;
+
+				this._lastX = (touch || evt).clientX;
+				this._lastY = (touch || evt).clientY;
+
+				dragEl.style['will-change'] = 'transform';
 
 				dragStartFn = function () {
 					// Delayed drag has been triggered
@@ -40135,13 +40628,16 @@ module.exports = SnowTheme;
 					_this._disableDelayedDrag();
 
 					// Make the element draggable
-					dragEl.draggable = true;
+					dragEl.draggable = _this.nativeDraggable;
 
 					// Chosen item
-					_toggleClass(dragEl, _this.options.chosenClass, true);
+					_toggleClass(dragEl, options.chosenClass, true);
 
 					// Bind the events: dragstart/dragend
-					_this._triggerDragStart(touch);
+					_this._triggerDragStart(evt, touch);
+
+					// Drag start event
+					_dispatchEvent(_this, rootEl, 'choose', dragEl, rootEl, oldIndex);
 				};
 
 				// Disable "draggable"
@@ -40152,6 +40648,8 @@ module.exports = SnowTheme;
 				_on(ownerDocument, 'mouseup', _this._onDrop);
 				_on(ownerDocument, 'touchend', _this._onDrop);
 				_on(ownerDocument, 'touchcancel', _this._onDrop);
+				_on(ownerDocument, 'pointercancel', _this._onDrop);
+				_on(ownerDocument, 'selectstart', _this);
 
 				if (options.delay) {
 					// If the user moves the pointer or let go the click or touch
@@ -40162,11 +40660,14 @@ module.exports = SnowTheme;
 					_on(ownerDocument, 'touchcancel', _this._disableDelayedDrag);
 					_on(ownerDocument, 'mousemove', _this._disableDelayedDrag);
 					_on(ownerDocument, 'touchmove', _this._disableDelayedDrag);
+					_on(ownerDocument, 'pointermove', _this._disableDelayedDrag);
 
 					_this._dragStartTimer = setTimeout(dragStartFn, options.delay);
 				} else {
 					dragStartFn();
 				}
+
+
 			}
 		},
 
@@ -40179,9 +40680,12 @@ module.exports = SnowTheme;
 			_off(ownerDocument, 'touchcancel', this._disableDelayedDrag);
 			_off(ownerDocument, 'mousemove', this._disableDelayedDrag);
 			_off(ownerDocument, 'touchmove', this._disableDelayedDrag);
+			_off(ownerDocument, 'pointermove', this._disableDelayedDrag);
 		},
 
-		_triggerDragStart: function (/** Touch */touch) {
+		_triggerDragStart: function (/** Event */evt, /** Touch */touch) {
+			touch = touch || (evt.pointerType == 'touch' ? evt : null);
+
 			if (touch) {
 				// Touch device support
 				tapEvt = {
@@ -40201,8 +40705,11 @@ module.exports = SnowTheme;
 			}
 
 			try {
-				if (document.selection) {
-					document.selection.empty();
+				if (document.selection) {					
+					// Timeout neccessary for IE9					
+					setTimeout(function () {
+						document.selection.empty();
+					});					
 				} else {
 					window.getSelection().removeAllRanges();
 				}
@@ -40212,13 +40719,18 @@ module.exports = SnowTheme;
 
 		_dragStarted: function () {
 			if (rootEl && dragEl) {
+				var options = this.options;
+
 				// Apply effect
-				_toggleClass(dragEl, this.options.ghostClass, true);
+				_toggleClass(dragEl, options.ghostClass, true);
+				_toggleClass(dragEl, options.dragClass, false);
 
 				Sortable.active = this;
 
 				// Drag start event
 				_dispatchEvent(this, rootEl, 'start', dragEl, rootEl, oldIndex);
+			} else {
+				this._nulling();
 			}
 		},
 
@@ -40237,12 +40749,11 @@ module.exports = SnowTheme;
 
 				var target = document.elementFromPoint(touchEvt.clientX, touchEvt.clientY),
 					parent = target,
-					groupName = ' ' + this.options.group.name + '',
 					i = touchDragOverListeners.length;
 
 				if (parent) {
 					do {
-						if (parent[expando] && parent[expando].options.groups.indexOf(groupName) > -1) {
+						if (parent[expando]) {
 							while (i--) {
 								touchDragOverListeners[i]({
 									clientX: touchEvt.clientX,
@@ -40270,18 +40781,27 @@ module.exports = SnowTheme;
 
 		_onTouchMove: function (/**TouchEvent*/evt) {
 			if (tapEvt) {
+				var	options = this.options,
+					fallbackTolerance = options.fallbackTolerance,
+					fallbackOffset = options.fallbackOffset,
+					touch = evt.touches ? evt.touches[0] : evt,
+					dx = (touch.clientX - tapEvt.clientX) + fallbackOffset.x,
+					dy = (touch.clientY - tapEvt.clientY) + fallbackOffset.y,
+					translate3d = evt.touches ? 'translate3d(' + dx + 'px,' + dy + 'px,0)' : 'translate(' + dx + 'px,' + dy + 'px)';
+
 				// only set the status to dragging, when we are actually dragging
 				if (!Sortable.active) {
+					if (fallbackTolerance &&
+						min(abs(touch.clientX - this._lastX), abs(touch.clientY - this._lastY)) < fallbackTolerance
+					) {
+						return;
+					}
+
 					this._dragStarted();
 				}
 
 				// as well as creating the ghost element on the document body
 				this._appendGhost();
-
-				var touch = evt.touches ? evt.touches[0] : evt,
-					dx = touch.clientX - tapEvt.clientX,
-					dy = touch.clientY - tapEvt.clientY,
-					translate3d = evt.touches ? 'translate3d(' + dx + 'px,' + dy + 'px,0)' : 'translate(' + dx + 'px,' + dy + 'px)';
 
 				moved = true;
 				touchEvt = touch;
@@ -40306,6 +40826,7 @@ module.exports = SnowTheme;
 
 				_toggleClass(ghostEl, options.ghostClass, false);
 				_toggleClass(ghostEl, options.fallbackClass, true);
+				_toggleClass(ghostEl, options.dragClass, true);
 
 				_css(ghostEl, 'top', rect.top - parseInt(css.marginTop, 10));
 				_css(ghostEl, 'left', rect.left - parseInt(css.marginLeft, 10));
@@ -40331,19 +40852,29 @@ module.exports = SnowTheme;
 
 			this._offUpEvents();
 
-			if (activeGroup.pull == 'clone') {
-				cloneEl = dragEl.cloneNode(true);
+			if (activeGroup.checkPull(this, this, dragEl, evt)) {
+				cloneEl = _clone(dragEl);
+
+				cloneEl.draggable = false;
+				cloneEl.style['will-change'] = '';
+
 				_css(cloneEl, 'display', 'none');
+				_toggleClass(cloneEl, this.options.chosenClass, false);
+
 				rootEl.insertBefore(cloneEl, dragEl);
+				_dispatchEvent(this, rootEl, 'clone', dragEl);
 			}
 
-			if (useFallback) {
+			_toggleClass(dragEl, options.dragClass, true);
 
+			if (useFallback) {
 				if (useFallback === 'touch') {
 					// Bind touch events
 					_on(document, 'touchmove', this._onTouchMove);
 					_on(document, 'touchend', this._onDrop);
 					_on(document, 'touchcancel', this._onDrop);
+					_on(document, 'pointermove', this._onTouchMove);
+					_on(document, 'pointerup', this._onDrop);
 				} else {
 					// Old brwoser
 					_on(document, 'mousemove', this._onTouchMove);
@@ -40367,11 +40898,13 @@ module.exports = SnowTheme;
 			var el = this.el,
 				target,
 				dragRect,
+				targetRect,
 				revert,
 				options = this.options,
 				group = options.group,
-				groupPut = group.put,
+				activeSortable = Sortable.active,
 				isOwner = (activeGroup === group),
+				isMovingBetweenSortable = false,
 				canSort = options.sort;
 
 			if (evt.preventDefault !== void 0) {
@@ -40379,14 +40912,21 @@ module.exports = SnowTheme;
 				!options.dragoverBubble && evt.stopPropagation();
 			}
 
+			if (dragEl.animated) {
+				return;
+			}
+
 			moved = true;
 
-			if (activeGroup && !options.disabled &&
+			if (activeSortable && !options.disabled &&
 				(isOwner
 					? canSort || (revert = !rootEl.contains(dragEl)) // Reverting item into the original list
-					: activeGroup.pull && groupPut && (
-						(activeGroup.name === group.name) || // by Name
-						(groupPut.indexOf && ~groupPut.indexOf(activeGroup.name)) // by Array
+					: (
+						putSortable === this ||
+						(
+							(activeSortable.lastPullMode = activeGroup.checkPull(this, activeSortable, dragEl, evt)) &&
+							group.checkPut(this, activeSortable, dragEl, evt)
+						)
 					)
 				) &&
 				(evt.rootEl === void 0 || evt.rootEl === this.el) // touch fallback
@@ -40401,8 +40941,14 @@ module.exports = SnowTheme;
 				target = _closest(evt.target, options.draggable, el);
 				dragRect = dragEl.getBoundingClientRect();
 
+				if (putSortable !== this) {
+					putSortable = this;
+					isMovingBetweenSortable = true;
+				}
+
 				if (revert) {
-					_cloneHide(true);
+					_cloneHide(activeSortable, true);
+					parentEl = rootEl; // actualization
 
 					if (cloneEl || nextEl) {
 						rootEl.insertBefore(dragEl, cloneEl || nextEl);
@@ -40418,7 +40964,6 @@ module.exports = SnowTheme;
 				if ((el.children.length === 0) || (el.children[0] === ghostEl) ||
 					(el === evt.target) && (target = _ghostIsLast(el, evt))
 				) {
-
 					if (target) {
 						if (target.animated) {
 							return;
@@ -40427,9 +40972,9 @@ module.exports = SnowTheme;
 						targetRect = target.getBoundingClientRect();
 					}
 
-					_cloneHide(isOwner);
+					_cloneHide(activeSortable, isOwner);
 
-					if (_onMove(rootEl, el, dragEl, dragRect, target, targetRect) !== false) {
+					if (_onMove(rootEl, el, dragEl, dragRect, target, targetRect, evt) !== false) {
 						if (!dragEl.contains(el)) {
 							el.appendChild(dragEl);
 							parentEl = el; // actualization
@@ -40446,25 +40991,25 @@ module.exports = SnowTheme;
 						lastParentCSS = _css(target.parentNode);
 					}
 
+					targetRect = target.getBoundingClientRect();
 
-					var targetRect = target.getBoundingClientRect(),
-						width = targetRect.right - targetRect.left,
+					var width = targetRect.right - targetRect.left,
 						height = targetRect.bottom - targetRect.top,
-						floating = /left|right|inline/.test(lastCSS.cssFloat + lastCSS.display)
+						floating = R_FLOAT.test(lastCSS.cssFloat + lastCSS.display)
 							|| (lastParentCSS.display == 'flex' && lastParentCSS['flex-direction'].indexOf('row') === 0),
 						isWide = (target.offsetWidth > dragEl.offsetWidth),
 						isLong = (target.offsetHeight > dragEl.offsetHeight),
 						halfway = (floating ? (evt.clientX - targetRect.left) / width : (evt.clientY - targetRect.top) / height) > 0.5,
 						nextSibling = target.nextElementSibling,
-						moveVector = _onMove(rootEl, el, dragEl, dragRect, target, targetRect),
-						after
+						moveVector = _onMove(rootEl, el, dragEl, dragRect, target, targetRect, evt),
+						after = false
 					;
 
 					if (moveVector !== false) {
 						_silent = true;
 						setTimeout(_unsilent, 30);
 
-						_cloneHide(isOwner);
+						_cloneHide(activeSortable, isOwner);
 
 						if (moveVector === 1 || moveVector === -1) {
 							after = (moveVector === 1);
@@ -40475,10 +41020,13 @@ module.exports = SnowTheme;
 
 							if (elTop === tgTop) {
 								after = (target.previousElementSibling === dragEl) && !isWide || halfway && isWide;
+							}
+							else if (target.previousElementSibling === dragEl || dragEl.previousElementSibling === target) {
+								after = (evt.clientY - targetRect.top) / height > 0.5;
 							} else {
 								after = tgTop > elTop;
 							}
-						} else {
+						} else if (!isMovingBetweenSortable) {
 							after = (nextSibling !== dragEl) && !isLong || halfway && isLong;
 						}
 
@@ -40505,6 +41053,10 @@ module.exports = SnowTheme;
 			if (ms) {
 				var currentRect = target.getBoundingClientRect();
 
+				if (prevRect.nodeType === 1) {
+					prevRect = prevRect.getBoundingClientRect();
+				}
+
 				_css(target, 'transition', 'none');
 				_css(target, 'transform', 'translate3d('
 					+ (prevRect.left - currentRect.left) + 'px,'
@@ -40529,9 +41081,12 @@ module.exports = SnowTheme;
 			var ownerDocument = this.el.ownerDocument;
 
 			_off(document, 'touchmove', this._onTouchMove);
+			_off(document, 'pointermove', this._onTouchMove);
 			_off(ownerDocument, 'mouseup', this._onDrop);
 			_off(ownerDocument, 'touchend', this._onDrop);
+			_off(ownerDocument, 'pointerup', this._onDrop);
 			_off(ownerDocument, 'touchcancel', this._onDrop);
+			_off(ownerDocument, 'selectstart', this);
 		},
 
 		_onDrop: function (/**Event*/evt) {
@@ -40560,39 +41115,42 @@ module.exports = SnowTheme;
 
 				ghostEl && ghostEl.parentNode.removeChild(ghostEl);
 
+				if (rootEl === parentEl || Sortable.active.lastPullMode !== 'clone') {
+					// Remove clone
+					cloneEl && cloneEl.parentNode.removeChild(cloneEl);
+				}
+
 				if (dragEl) {
 					if (this.nativeDraggable) {
 						_off(dragEl, 'dragend', this);
 					}
 
 					_disableDraggable(dragEl);
+					dragEl.style['will-change'] = '';
 
 					// Remove class's
 					_toggleClass(dragEl, this.options.ghostClass, false);
 					_toggleClass(dragEl, this.options.chosenClass, false);
 
 					if (rootEl !== parentEl) {
-						newIndex = _index(dragEl);
+						newIndex = _index(dragEl, options.draggable);
 
 						if (newIndex >= 0) {
-							// drag from one list and drop into another
-							_dispatchEvent(null, parentEl, 'sort', dragEl, rootEl, oldIndex, newIndex);
-							_dispatchEvent(this, rootEl, 'sort', dragEl, rootEl, oldIndex, newIndex);
-
 							// Add event
 							_dispatchEvent(null, parentEl, 'add', dragEl, rootEl, oldIndex, newIndex);
 
 							// Remove event
 							_dispatchEvent(this, rootEl, 'remove', dragEl, rootEl, oldIndex, newIndex);
+
+							// drag from one list and drop into another
+							_dispatchEvent(null, parentEl, 'sort', dragEl, rootEl, oldIndex, newIndex);
+							_dispatchEvent(this, rootEl, 'sort', dragEl, rootEl, oldIndex, newIndex);
 						}
 					}
 					else {
-						// Remove clone
-						cloneEl && cloneEl.parentNode.removeChild(cloneEl);
-
 						if (dragEl.nextSibling !== nextEl) {
 							// Get the index of the dragged element within its parent
-							newIndex = _index(dragEl);
+							newIndex = _index(dragEl, options.draggable);
 
 							if (newIndex >= 0) {
 								// drag & drop within the same list
@@ -40603,7 +41161,8 @@ module.exports = SnowTheme;
 					}
 
 					if (Sortable.active) {
-						if (newIndex === null || newIndex === -1) {
+						/* jshint eqnull:true */
+						if (newIndex == null || newIndex === -1) {
 							newIndex = oldIndex;
 						}
 
@@ -40614,43 +41173,60 @@ module.exports = SnowTheme;
 					}
 				}
 
-				// Nulling
-				rootEl =
-				dragEl =
-				parentEl =
-				ghostEl =
-				nextEl =
-				cloneEl =
-
-				scrollEl =
-				scrollParentEl =
-
-				tapEvt =
-				touchEvt =
-
-				moved =
-				newIndex =
-
-				lastEl =
-				lastCSS =
-
-				activeGroup =
-				Sortable.active = null;
 			}
+
+			this._nulling();
 		},
 
+		_nulling: function() {
+			rootEl =
+			dragEl =
+			parentEl =
+			ghostEl =
+			nextEl =
+			cloneEl =
+			lastDownEl =
+
+			scrollEl =
+			scrollParentEl =
+
+			tapEvt =
+			touchEvt =
+
+			moved =
+			newIndex =
+
+			lastEl =
+			lastCSS =
+
+			putSortable =
+			activeGroup =
+			Sortable.active = null;
+
+			savedInputChecked.forEach(function (el) {
+				el.checked = true;
+			});
+			savedInputChecked.length = 0;
+		},
 
 		handleEvent: function (/**Event*/evt) {
-			var type = evt.type;
+			switch (evt.type) {
+				case 'drop':
+				case 'dragend':
+					this._onDrop(evt);
+					break;
 
-			if (type === 'dragover' || type === 'dragenter') {
-				if (dragEl) {
-					this._onDragOver(evt);
-					_globalDragOver(evt);
-				}
-			}
-			else if (type === 'drop' || type === 'dragend') {
-				this._onDrop(evt);
+				case 'dragover':
+				case 'dragenter':
+					if (dragEl) {
+						this._onDragOver(evt);
+						_globalDragOver(evt);
+					}
+					break;
+
+				case 'selectstart':
+					evt.preventDefault();
+					break;
 			}
 		},
 
@@ -40753,6 +41329,7 @@ module.exports = SnowTheme;
 
 			_off(el, 'mousedown', this._onTapStart);
 			_off(el, 'touchstart', this._onTapStart);
+			_off(el, 'pointerdown', this._onTapStart);
 
 			if (this.nativeDraggable) {
 				_off(el, 'dragover', this);
@@ -40773,10 +41350,25 @@ module.exports = SnowTheme;
 	};
 
 
-	function _cloneHide(state) {
+	function _cloneHide(sortable, state) {
+		if (sortable.lastPullMode !== 'clone') {
+			state = true;
+		}
+
 		if (cloneEl && (cloneEl.state !== state)) {
 			_css(cloneEl, 'display', state ? 'none' : '');
-			!state && cloneEl.state && rootEl.insertBefore(cloneEl, dragEl);
+
+			if (!state) {
+				if (cloneEl.state) {
+					if (sortable.options.group.revertClone) {
+						rootEl.insertBefore(cloneEl, nextEl);
+						sortable._animate(dragEl, cloneEl);
+					} else {
+						rootEl.insertBefore(cloneEl, dragEl);
+					}
+				}
+			}
+
 			cloneEl.state = state;
 		}
 	}
@@ -40785,25 +41377,23 @@ module.exports = SnowTheme;
 	function _closest(/**HTMLElement*/el, /**String*/selector, /**HTMLElement*/ctx) {
 		if (el) {
 			ctx = ctx || document;
-			selector = selector.split('.');
-
-			var tag = selector.shift().toUpperCase(),
-				re = new RegExp('\\s(' + selector.join('|') + ')(?=\\s)', 'g');
 
 			do {
-				if (
-					(tag === '>*' && el.parentNode === ctx) || (
-						(tag === '' || el.nodeName.toUpperCase() == tag) &&
-						(!selector.length || ((' ' + el.className + ' ').match(re) || []).length == selector.length)
-					)
-				) {
+				if ((selector === '>*' && el.parentNode === ctx) || _matches(el, selector)) {
 					return el;
 				}
-			}
-			while (el !== ctx && (el = el.parentNode));
+				/* jshint boss:true */
+			} while (el = _getParentOrHost(el));
 		}
 
 		return null;
+	}
+
+
+	function _getParentOrHost(el) {
+		var parent = el.host;
+
+		return (parent && parent.nodeType) ? parent : el.parentNode;
 	}
 
 
@@ -40816,12 +41406,12 @@ module.exports = SnowTheme;
 
 
 	function _on(el, event, fn) {
-		el.addEventListener(event, fn, false);
+		el.addEventListener(event, fn, captureMode);
 	}
 
 
 	function _off(el, event, fn) {
-		el.removeEventListener(event, fn, false);
+		el.removeEventListener(event, fn, captureMode);
 	}
 
 
@@ -40831,8 +41421,8 @@ module.exports = SnowTheme;
 				el.classList[state ? 'add' : 'remove'](name);
 			}
 			else {
-				var className = (' ' + el.className + ' ').replace(RSPACE, ' ').replace(' ' + name + ' ', ' ');
-				el.className = (className + (state ? ' ' + name : '')).replace(RSPACE, ' ');
+				var className = (' ' + el.className + ' ').replace(R_SPACE, ' ').replace(' ' + name + ' ', ' ');
+				el.className = (className + (state ? ' ' + name : '')).replace(R_SPACE, ' ');
 			}
 		}
 	}
@@ -40882,8 +41472,10 @@ module.exports = SnowTheme;
 
 
 	function _dispatchEvent(sortable, rootEl, name, targetEl, fromEl, startIndex, newIndex) {
+		sortable = (sortable || rootEl[expando]);
+
 		var evt = document.createEvent('Event'),
-			options = (sortable || rootEl[expando]).options,
+			options = sortable.options,
 			onName = 'on' + name.charAt(0).toUpperCase() + name.substr(1);
 
 		evt.initEvent(name, true, true);
@@ -40904,7 +41496,7 @@ module.exports = SnowTheme;
 	}
 
 
-	function _onMove(fromEl, toEl, dragEl, dragRect, targetEl, targetRect) {
+	function _onMove(fromEl, toEl, dragEl, dragRect, targetEl, targetRect, originalEvt) {
 		var evt,
 			sortable = fromEl[expando],
 			onMoveFn = sortable.options.onMove,
@@ -40923,7 +41515,7 @@ module.exports = SnowTheme;
 		fromEl.dispatchEvent(evt);
 
 		if (onMoveFn) {
-			retVal = onMoveFn.call(sortable, evt);
+			retVal = onMoveFn.call(sortable, evt, originalEvt);
 		}
 
 		return retVal;
@@ -40943,9 +41535,14 @@ module.exports = SnowTheme;
 	/** @returns {HTMLElement|false} */
 	function _ghostIsLast(el, evt) {
 		var lastEl = el.lastElementChild,
-				rect = lastEl.getBoundingClientRect();
+			rect = lastEl.getBoundingClientRect();
 
-		return ((evt.clientY - (rect.top + rect.height) > 5) || (evt.clientX - (rect.right + rect.width) > 5)) && lastEl; // min delta
+		// 5 — min delta
+		// abs — нельзя добавлять, а то глюки при наведении сверху
+		return (
+			(evt.clientY - (rect.top + rect.height) > 5) ||
+			(evt.clientX - (rect.right + rect.width) > 5)
+		) && lastEl;
 	}
 
 
@@ -40968,11 +41565,13 @@ module.exports = SnowTheme;
 	}
 
 	/**
-	 * Returns the index of an element within its parent
+	 * Returns the index of an element within its parent for a selected set of
+	 * elements
 	 * @param  {HTMLElement} el
+	 * @param  {selector} selector
 	 * @return {number}
 	 */
-	function _index(el) {
+	function _index(el, selector) {
 		var index = 0;
 
 		if (!el || !el.parentNode) {
@@ -40980,12 +41579,28 @@ module.exports = SnowTheme;
 		}
 
 		while (el && (el = el.previousElementSibling)) {
-			if (el.nodeName.toUpperCase() !== 'TEMPLATE') {
+			if ((el.nodeName.toUpperCase() !== 'TEMPLATE') && (selector === '>*' || _matches(el, selector))) {
 				index++;
 			}
 		}
 
 		return index;
+	}
+
+	function _matches(/**HTMLElement*/el, /**String*/selector) {
+		if (el) {
+			selector = selector.split('.');
+
+			var tag = selector.shift().toUpperCase(),
+				re = new RegExp('\\s(' + selector.join('|') + ')(?=\\s)', 'g');
+
+			return (
+				(tag === '' || el.nodeName.toUpperCase() == tag) &&
+				(!selector.length || ((' ' + el.className + ' ').match(re) || []).length == selector.length)
+			);
+		}
+
+		return false;
 	}
 
 	function _throttle(callback, ms) {
@@ -41021,6 +41636,42 @@ module.exports = SnowTheme;
 		return dst;
 	}
 
+	function _clone(el) {
+		return $
+			? $(el).clone(true)[0]
+			: (Polymer && Polymer.dom
+				? Polymer.dom(el).cloneNode(true)
+				: el.cloneNode(true)
+			);
+	}
+
+	function _saveInputCheckedState(root) {
+		var inputs = root.getElementsByTagName('input');
+		var idx = inputs.length;
+
+		while (idx--) {
+			var el = inputs[idx];
+			el.checked && savedInputChecked.push(el);
+		}
+	}
+
+	// Fixed #973: 
+	_on(document, 'touchmove', function (evt) {
+		if (Sortable.active) {
+			evt.preventDefault();
+		}
+	});
+
+	try {
+		window.addEventListener('test', null, Object.defineProperty({}, 'passive', {
+			get: function () {
+				captureMode = {
+					capture: false,
+					passive: false
+				};
+			}
+		}));
+	} catch (err) {}
 
 	// Export utils
 	Sortable.utils = {
@@ -41035,6 +41686,7 @@ module.exports = SnowTheme;
 		throttle: _throttle,
 		closest: _closest,
 		toggleClass: _toggleClass,
+		clone: _clone,
 		index: _index
 	};
 
@@ -41050,7 +41702,7 @@ module.exports = SnowTheme;
 
 
 	// Export
-	Sortable.version = '1.4.2';
+	Sortable.version = '1.5.1';
 	return Sortable;
 });
 
@@ -41097,7 +41749,7 @@ module.exports = SnowTheme;
 
 			if (sortable) {
 				if (options === 'widget') {
-					return sortable;
+					retVal = sortable;
 				}
 				else if (options === 'destroy') {
 					sortable.destroy();
@@ -44034,13 +44686,13 @@ else {
 }).call(this);
 
 /*!
- * Bootstrap v4.0.0-alpha.5 (https://getbootstrap.com)
- * Copyright 2011-2016 The Bootstrap Authors (https://github.com/twbs/bootstrap/graphs/contributors)
+ * Bootstrap v4.0.0-alpha.6 (https://getbootstrap.com)
+ * Copyright 2011-2017 The Bootstrap Authors (https://github.com/twbs/bootstrap/graphs/contributors)
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  */
 
 if (typeof jQuery === 'undefined') {
-  throw new Error('Bootstrap\'s JavaScript requires jQuery')
+  throw new Error('Bootstrap\'s JavaScript requires jQuery. jQuery must be included before Bootstrap\'s JavaScript.')
 }
 
 +function ($) {
@@ -44065,7 +44717,7 @@ function _classCallCheck(instance, Constructor) { if (!(instance instanceof Cons
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): util.js
+ * Bootstrap (v4.0.0-alpha.6): util.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -44120,7 +44772,9 @@ var Util = function ($) {
 
     for (var name in TransitionEndEvent) {
       if (el.style[name] !== undefined) {
-        return { end: TransitionEndEvent[name] };
+        return {
+          end: TransitionEndEvent[name]
+        };
       }
     }
 
@@ -44167,9 +44821,8 @@ var Util = function ($) {
 
     getUID: function getUID(prefix) {
       do {
-        /* eslint-disable no-bitwise */
+        // eslint-disable-next-line no-bitwise
         prefix += ~~(Math.random() * MAX_UID); // "~~" acts like a faster Math.floor() here
-        /* eslint-enable no-bitwise */
       } while (document.getElementById(prefix));
       return prefix;
     },
@@ -44184,7 +44837,7 @@ var Util = function ($) {
       return selector;
     },
     reflow: function reflow(element) {
-      new Function('bs', 'return bs')(element.offsetHeight);
+      return element.offsetHeight;
     },
     triggerTransitionEnd: function triggerTransitionEnd(element) {
       $(element).trigger(transition.end);
@@ -44197,13 +44850,7 @@ var Util = function ($) {
         if (configTypes.hasOwnProperty(property)) {
           var expectedTypes = configTypes[property];
           var value = config[property];
-          var valueType = void 0;
-
-          if (value && isElement(value)) {
-            valueType = 'element';
-          } else {
-            valueType = toType(value);
-          }
+          var valueType = value && isElement(value) ? 'element' : toType(value);
 
           if (!new RegExp(expectedTypes).test(valueType)) {
             throw new Error(componentName.toUpperCase() + ': ' + ('Option "' + property + '" provided type "' + valueType + '" ') + ('but expected type "' + expectedTypes + '".'));
@@ -44220,7 +44867,7 @@ var Util = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): alert.js
+ * Bootstrap (v4.0.0-alpha.6): alert.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -44234,7 +44881,7 @@ var Alert = function ($) {
    */
 
   var NAME = 'alert';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.alert';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -44254,7 +44901,7 @@ var Alert = function ($) {
   var ClassName = {
     ALERT: 'alert',
     FADE: 'fade',
-    IN: 'in'
+    SHOW: 'show'
   };
 
   /**
@@ -44317,14 +44964,18 @@ var Alert = function ($) {
     };
 
     Alert.prototype._removeElement = function _removeElement(element) {
-      $(element).removeClass(ClassName.IN);
+      var _this2 = this;
+
+      $(element).removeClass(ClassName.SHOW);
 
       if (!Util.supportsTransitionEnd() || !$(element).hasClass(ClassName.FADE)) {
         this._destroyElement(element);
         return;
       }
 
-      $(element).one(Util.TRANSITION_END, $.proxy(this._destroyElement, this, element)).emulateTransitionEnd(TRANSITION_DURATION);
+      $(element).one(Util.TRANSITION_END, function (event) {
+        return _this2._destroyElement(element, event);
+      }).emulateTransitionEnd(TRANSITION_DURATION);
     };
 
     Alert.prototype._destroyElement = function _destroyElement(element) {
@@ -44395,7 +45046,7 @@ var Alert = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): button.js
+ * Bootstrap (v4.0.0-alpha.6): button.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -44409,7 +45060,7 @@ var Button = function ($) {
    */
 
   var NAME = 'button';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.button';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -44473,14 +45124,14 @@ var Button = function ($) {
 
           if (triggerChangeEvent) {
             input.checked = !$(this._element).hasClass(ClassName.ACTIVE);
-            $(this._element).trigger('change');
+            $(input).trigger('change');
           }
 
           input.focus();
         }
-      } else {
-        this._element.setAttribute('aria-pressed', !$(this._element).hasClass(ClassName.ACTIVE));
       }
+
+      this._element.setAttribute('aria-pressed', !$(this._element).hasClass(ClassName.ACTIVE));
 
       if (triggerChangeEvent) {
         $(this._element).toggleClass(ClassName.ACTIVE);
@@ -44558,7 +45209,7 @@ var Button = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): carousel.js
+ * Bootstrap (v4.0.0-alpha.6): carousel.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -44572,7 +45223,7 @@ var Carousel = function ($) {
    */
 
   var NAME = 'carousel';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.carousel';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -44599,7 +45250,9 @@ var Carousel = function ($) {
 
   var Direction = {
     NEXT: 'next',
-    PREVIOUS: 'prev'
+    PREV: 'prev',
+    LEFT: 'left',
+    RIGHT: 'right'
   };
 
   var Event = {
@@ -44616,8 +45269,10 @@ var Carousel = function ($) {
     CAROUSEL: 'carousel',
     ACTIVE: 'active',
     SLIDE: 'slide',
-    RIGHT: 'right',
-    LEFT: 'left',
+    RIGHT: 'carousel-item-right',
+    LEFT: 'carousel-item-left',
+    NEXT: 'carousel-item-next',
+    PREV: 'carousel-item-prev',
     ITEM: 'carousel-item'
   };
 
@@ -44625,7 +45280,7 @@ var Carousel = function ($) {
     ACTIVE: '.active',
     ACTIVE_ITEM: '.active.carousel-item',
     ITEM: '.carousel-item',
-    NEXT_PREV: '.next, .prev',
+    NEXT_PREV: '.carousel-item-next, .carousel-item-prev',
     INDICATORS: '.carousel-indicators',
     DATA_SLIDE: '[data-slide], [data-slide-to]',
     DATA_RIDE: '[data-ride="carousel"]'
@@ -44660,9 +45315,10 @@ var Carousel = function ($) {
     // public
 
     Carousel.prototype.next = function next() {
-      if (!this._isSliding) {
-        this._slide(Direction.NEXT);
+      if (this._isSliding) {
+        throw new Error('Carousel is sliding');
       }
+      this._slide(Direction.NEXT);
     };
 
     Carousel.prototype.nextWhenVisible = function nextWhenVisible() {
@@ -44673,9 +45329,10 @@ var Carousel = function ($) {
     };
 
     Carousel.prototype.prev = function prev() {
-      if (!this._isSliding) {
-        this._slide(Direction.PREVIOUS);
+      if (this._isSliding) {
+        throw new Error('Carousel is sliding');
       }
+      this._slide(Direction.PREVIOUS);
     };
 
     Carousel.prototype.pause = function pause(event) {
@@ -44703,12 +45360,12 @@ var Carousel = function ($) {
       }
 
       if (this._config.interval && !this._isPaused) {
-        this._interval = setInterval($.proxy(document.visibilityState ? this.nextWhenVisible : this.next, this), this._config.interval);
+        this._interval = setInterval((document.visibilityState ? this.nextWhenVisible : this.next).bind(this), this._config.interval);
       }
     };
 
     Carousel.prototype.to = function to(index) {
-      var _this2 = this;
+      var _this3 = this;
 
       this._activeElement = $(this._element).find(Selector.ACTIVE_ITEM)[0];
 
@@ -44720,7 +45377,7 @@ var Carousel = function ($) {
 
       if (this._isSliding) {
         $(this._element).one(Event.SLID, function () {
-          return _this2.to(index);
+          return _this3.to(index);
         });
         return;
       }
@@ -44759,27 +45416,35 @@ var Carousel = function ($) {
     };
 
     Carousel.prototype._addEventListeners = function _addEventListeners() {
+      var _this4 = this;
+
       if (this._config.keyboard) {
-        $(this._element).on(Event.KEYDOWN, $.proxy(this._keydown, this));
+        $(this._element).on(Event.KEYDOWN, function (event) {
+          return _this4._keydown(event);
+        });
       }
 
       if (this._config.pause === 'hover' && !('ontouchstart' in document.documentElement)) {
-        $(this._element).on(Event.MOUSEENTER, $.proxy(this.pause, this)).on(Event.MOUSELEAVE, $.proxy(this.cycle, this));
+        $(this._element).on(Event.MOUSEENTER, function (event) {
+          return _this4.pause(event);
+        }).on(Event.MOUSELEAVE, function (event) {
+          return _this4.cycle(event);
+        });
       }
     };
 
     Carousel.prototype._keydown = function _keydown(event) {
-      event.preventDefault();
-
       if (/input|textarea/i.test(event.target.tagName)) {
         return;
       }
 
       switch (event.which) {
         case ARROW_LEFT_KEYCODE:
+          event.preventDefault();
           this.prev();
           break;
         case ARROW_RIGHT_KEYCODE:
+          event.preventDefault();
           this.next();
           break;
         default:
@@ -44809,10 +45474,10 @@ var Carousel = function ($) {
       return itemIndex === -1 ? this._items[this._items.length - 1] : this._items[itemIndex];
     };
 
-    Carousel.prototype._triggerSlideEvent = function _triggerSlideEvent(relatedTarget, directionalClassname) {
+    Carousel.prototype._triggerSlideEvent = function _triggerSlideEvent(relatedTarget, eventDirectionName) {
       var slideEvent = $.Event(Event.SLIDE, {
         relatedTarget: relatedTarget,
-        direction: directionalClassname
+        direction: eventDirectionName
       });
 
       $(this._element).trigger(slideEvent);
@@ -44833,21 +45498,33 @@ var Carousel = function ($) {
     };
 
     Carousel.prototype._slide = function _slide(direction, element) {
-      var _this3 = this;
+      var _this5 = this;
 
       var activeElement = $(this._element).find(Selector.ACTIVE_ITEM)[0];
       var nextElement = element || activeElement && this._getItemByDirection(direction, activeElement);
 
       var isCycling = Boolean(this._interval);
 
-      var directionalClassName = direction === Direction.NEXT ? ClassName.LEFT : ClassName.RIGHT;
+      var directionalClassName = void 0;
+      var orderClassName = void 0;
+      var eventDirectionName = void 0;
+
+      if (direction === Direction.NEXT) {
+        directionalClassName = ClassName.LEFT;
+        orderClassName = ClassName.NEXT;
+        eventDirectionName = Direction.LEFT;
+      } else {
+        directionalClassName = ClassName.RIGHT;
+        orderClassName = ClassName.PREV;
+        eventDirectionName = Direction.RIGHT;
+      }
 
       if (nextElement && $(nextElement).hasClass(ClassName.ACTIVE)) {
         this._isSliding = false;
         return;
       }
 
-      var slideEvent = this._triggerSlideEvent(nextElement, directionalClassName);
+      var slideEvent = this._triggerSlideEvent(nextElement, eventDirectionName);
       if (slideEvent.isDefaultPrevented()) {
         return;
       }
@@ -44867,12 +45544,12 @@ var Carousel = function ($) {
 
       var slidEvent = $.Event(Event.SLID, {
         relatedTarget: nextElement,
-        direction: directionalClassName
+        direction: eventDirectionName
       });
 
       if (Util.supportsTransitionEnd() && $(this._element).hasClass(ClassName.SLIDE)) {
 
-        $(nextElement).addClass(direction);
+        $(nextElement).addClass(orderClassName);
 
         Util.reflow(nextElement);
 
@@ -44880,16 +45557,14 @@ var Carousel = function ($) {
         $(nextElement).addClass(directionalClassName);
 
         $(activeElement).one(Util.TRANSITION_END, function () {
-          $(nextElement).removeClass(directionalClassName).removeClass(direction);
+          $(nextElement).removeClass(directionalClassName + ' ' + orderClassName).addClass(ClassName.ACTIVE);
 
-          $(nextElement).addClass(ClassName.ACTIVE);
+          $(activeElement).removeClass(ClassName.ACTIVE + ' ' + orderClassName + ' ' + directionalClassName);
 
-          $(activeElement).removeClass(ClassName.ACTIVE).removeClass(direction).removeClass(directionalClassName);
-
-          _this3._isSliding = false;
+          _this5._isSliding = false;
 
           setTimeout(function () {
-            return $(_this3._element).trigger(slidEvent);
+            return $(_this5._element).trigger(slidEvent);
           }, 0);
         }).emulateTransitionEnd(TRANSITION_DURATION);
       } else {
@@ -45014,7 +45689,7 @@ var Carousel = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): collapse.js
+ * Bootstrap (v4.0.0-alpha.6): collapse.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -45028,7 +45703,7 @@ var Collapse = function ($) {
    */
 
   var NAME = 'collapse';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.collapse';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -45054,7 +45729,7 @@ var Collapse = function ($) {
   };
 
   var ClassName = {
-    IN: 'in',
+    SHOW: 'show',
     COLLAPSE: 'collapse',
     COLLAPSING: 'collapsing',
     COLLAPSED: 'collapsed'
@@ -45066,7 +45741,7 @@ var Collapse = function ($) {
   };
 
   var Selector = {
-    ACTIVES: '.card > .in, .card > .collapsing',
+    ACTIVES: '.card > .show, .card > .collapsing',
     DATA_TOGGLE: '[data-toggle="collapse"]'
   };
 
@@ -45101,7 +45776,7 @@ var Collapse = function ($) {
     // public
 
     Collapse.prototype.toggle = function toggle() {
-      if ($(this._element).hasClass(ClassName.IN)) {
+      if ($(this._element).hasClass(ClassName.SHOW)) {
         this.hide();
       } else {
         this.show();
@@ -45109,9 +45784,13 @@ var Collapse = function ($) {
     };
 
     Collapse.prototype.show = function show() {
-      var _this4 = this;
+      var _this6 = this;
 
-      if (this._isTransitioning || $(this._element).hasClass(ClassName.IN)) {
+      if (this._isTransitioning) {
+        throw new Error('Collapse is transitioning');
+      }
+
+      if ($(this._element).hasClass(ClassName.SHOW)) {
         return;
       }
 
@@ -45119,7 +45798,7 @@ var Collapse = function ($) {
       var activesData = void 0;
 
       if (this._parent) {
-        actives = $.makeArray($(Selector.ACTIVES));
+        actives = $.makeArray($(this._parent).find(Selector.ACTIVES));
         if (!actives.length) {
           actives = null;
         }
@@ -45159,13 +45838,13 @@ var Collapse = function ($) {
       this.setTransitioning(true);
 
       var complete = function complete() {
-        $(_this4._element).removeClass(ClassName.COLLAPSING).addClass(ClassName.COLLAPSE).addClass(ClassName.IN);
+        $(_this6._element).removeClass(ClassName.COLLAPSING).addClass(ClassName.COLLAPSE).addClass(ClassName.SHOW);
 
-        _this4._element.style[dimension] = '';
+        _this6._element.style[dimension] = '';
 
-        _this4.setTransitioning(false);
+        _this6.setTransitioning(false);
 
-        $(_this4._element).trigger(Event.SHOWN);
+        $(_this6._element).trigger(Event.SHOWN);
       };
 
       if (!Util.supportsTransitionEnd()) {
@@ -45182,9 +45861,13 @@ var Collapse = function ($) {
     };
 
     Collapse.prototype.hide = function hide() {
-      var _this5 = this;
+      var _this7 = this;
 
-      if (this._isTransitioning || !$(this._element).hasClass(ClassName.IN)) {
+      if (this._isTransitioning) {
+        throw new Error('Collapse is transitioning');
+      }
+
+      if (!$(this._element).hasClass(ClassName.SHOW)) {
         return;
       }
 
@@ -45201,7 +45884,7 @@ var Collapse = function ($) {
 
       Util.reflow(this._element);
 
-      $(this._element).addClass(ClassName.COLLAPSING).removeClass(ClassName.COLLAPSE).removeClass(ClassName.IN);
+      $(this._element).addClass(ClassName.COLLAPSING).removeClass(ClassName.COLLAPSE).removeClass(ClassName.SHOW);
 
       this._element.setAttribute('aria-expanded', false);
 
@@ -45212,8 +45895,8 @@ var Collapse = function ($) {
       this.setTransitioning(true);
 
       var complete = function complete() {
-        _this5.setTransitioning(false);
-        $(_this5._element).removeClass(ClassName.COLLAPSING).addClass(ClassName.COLLAPSE).trigger(Event.HIDDEN);
+        _this7.setTransitioning(false);
+        $(_this7._element).removeClass(ClassName.COLLAPSING).addClass(ClassName.COLLAPSE).trigger(Event.HIDDEN);
       };
 
       this._element.style[dimension] = '';
@@ -45255,13 +45938,13 @@ var Collapse = function ($) {
     };
 
     Collapse.prototype._getParent = function _getParent() {
-      var _this6 = this;
+      var _this8 = this;
 
       var parent = $(this._config.parent)[0];
       var selector = '[data-toggle="collapse"][data-parent="' + this._config.parent + '"]';
 
       $(parent).find(selector).each(function (i, element) {
-        _this6._addAriaAndCollapsedClass(Collapse._getTargetFromElement(element), [element]);
+        _this8._addAriaAndCollapsedClass(Collapse._getTargetFromElement(element), [element]);
       });
 
       return parent;
@@ -45269,7 +45952,7 @@ var Collapse = function ($) {
 
     Collapse.prototype._addAriaAndCollapsedClass = function _addAriaAndCollapsedClass(element, triggerArray) {
       if (element) {
-        var isOpen = $(element).hasClass(ClassName.IN);
+        var isOpen = $(element).hasClass(ClassName.SHOW);
         element.setAttribute('aria-expanded', isOpen);
 
         if (triggerArray.length) {
@@ -45358,7 +46041,7 @@ var Collapse = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): dropdown.js
+ * Bootstrap (v4.0.0-alpha.6): dropdown.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -45372,7 +46055,7 @@ var Dropdown = function ($) {
    */
 
   var NAME = 'dropdown';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.dropdown';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -45389,13 +46072,14 @@ var Dropdown = function ($) {
     SHOWN: 'shown' + EVENT_KEY,
     CLICK: 'click' + EVENT_KEY,
     CLICK_DATA_API: 'click' + EVENT_KEY + DATA_API_KEY,
+    FOCUSIN_DATA_API: 'focusin' + EVENT_KEY + DATA_API_KEY,
     KEYDOWN_DATA_API: 'keydown' + EVENT_KEY + DATA_API_KEY
   };
 
   var ClassName = {
     BACKDROP: 'dropdown-backdrop',
     DISABLED: 'disabled',
-    OPEN: 'open'
+    SHOW: 'show'
   };
 
   var Selector = {
@@ -45433,7 +46117,7 @@ var Dropdown = function ($) {
       }
 
       var parent = Dropdown._getParentFromElement(this);
-      var isActive = $(parent).hasClass(ClassName.OPEN);
+      var isActive = $(parent).hasClass(ClassName.SHOW);
 
       Dropdown._clearMenus();
 
@@ -45450,7 +46134,9 @@ var Dropdown = function ($) {
         $(dropdown).on('click', Dropdown._clearMenus);
       }
 
-      var relatedTarget = { relatedTarget: this };
+      var relatedTarget = {
+        relatedTarget: this
+      };
       var showEvent = $.Event(Event.SHOW, relatedTarget);
 
       $(parent).trigger(showEvent);
@@ -45460,9 +46146,9 @@ var Dropdown = function ($) {
       }
 
       this.focus();
-      this.setAttribute('aria-expanded', 'true');
+      this.setAttribute('aria-expanded', true);
 
-      $(parent).toggleClass(ClassName.OPEN);
+      $(parent).toggleClass(ClassName.SHOW);
       $(parent).trigger($.Event(Event.SHOWN, relatedTarget));
 
       return false;
@@ -45487,7 +46173,8 @@ var Dropdown = function ($) {
         var data = $(this).data(DATA_KEY);
 
         if (!data) {
-          $(this).data(DATA_KEY, data = new Dropdown(this));
+          data = new Dropdown(this);
+          $(this).data(DATA_KEY, data);
         }
 
         if (typeof config === 'string') {
@@ -45513,13 +46200,15 @@ var Dropdown = function ($) {
 
       for (var i = 0; i < toggles.length; i++) {
         var parent = Dropdown._getParentFromElement(toggles[i]);
-        var relatedTarget = { relatedTarget: toggles[i] };
+        var relatedTarget = {
+          relatedTarget: toggles[i]
+        };
 
-        if (!$(parent).hasClass(ClassName.OPEN)) {
+        if (!$(parent).hasClass(ClassName.SHOW)) {
           continue;
         }
 
-        if (event && event.type === 'click' && /input|textarea/i.test(event.target.tagName) && $.contains(parent, event.target)) {
+        if (event && (event.type === 'click' && /input|textarea/i.test(event.target.tagName) || event.type === 'focusin') && $.contains(parent, event.target)) {
           continue;
         }
 
@@ -45531,7 +46220,7 @@ var Dropdown = function ($) {
 
         toggles[i].setAttribute('aria-expanded', 'false');
 
-        $(parent).removeClass(ClassName.OPEN).trigger($.Event(Event.HIDDEN, relatedTarget));
+        $(parent).removeClass(ClassName.SHOW).trigger($.Event(Event.HIDDEN, relatedTarget));
       }
     };
 
@@ -45559,7 +46248,7 @@ var Dropdown = function ($) {
       }
 
       var parent = Dropdown._getParentFromElement(this);
-      var isActive = $(parent).hasClass(ClassName.OPEN);
+      var isActive = $(parent).hasClass(ClassName.SHOW);
 
       if (!isActive && event.which !== ESCAPE_KEYCODE || isActive && event.which === ESCAPE_KEYCODE) {
 
@@ -45572,11 +46261,7 @@ var Dropdown = function ($) {
         return;
       }
 
-      var items = $.makeArray($(Selector.VISIBLE_ITEMS));
-
-      items = items.filter(function (item) {
-        return item.offsetWidth || item.offsetHeight;
-      });
+      var items = $(parent).find(Selector.VISIBLE_ITEMS).get();
 
       if (!items.length) {
         return;
@@ -45617,7 +46302,7 @@ var Dropdown = function ($) {
    * ------------------------------------------------------------------------
    */
 
-  $(document).on(Event.KEYDOWN_DATA_API, Selector.DATA_TOGGLE, Dropdown._dataApiKeydownHandler).on(Event.KEYDOWN_DATA_API, Selector.ROLE_MENU, Dropdown._dataApiKeydownHandler).on(Event.KEYDOWN_DATA_API, Selector.ROLE_LISTBOX, Dropdown._dataApiKeydownHandler).on(Event.CLICK_DATA_API, Dropdown._clearMenus).on(Event.CLICK_DATA_API, Selector.DATA_TOGGLE, Dropdown.prototype.toggle).on(Event.CLICK_DATA_API, Selector.FORM_CHILD, function (e) {
+  $(document).on(Event.KEYDOWN_DATA_API, Selector.DATA_TOGGLE, Dropdown._dataApiKeydownHandler).on(Event.KEYDOWN_DATA_API, Selector.ROLE_MENU, Dropdown._dataApiKeydownHandler).on(Event.KEYDOWN_DATA_API, Selector.ROLE_LISTBOX, Dropdown._dataApiKeydownHandler).on(Event.CLICK_DATA_API + ' ' + Event.FOCUSIN_DATA_API, Dropdown._clearMenus).on(Event.CLICK_DATA_API, Selector.DATA_TOGGLE, Dropdown.prototype.toggle).on(Event.CLICK_DATA_API, Selector.FORM_CHILD, function (e) {
     e.stopPropagation();
   });
 
@@ -45639,7 +46324,7 @@ var Dropdown = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): modal.js
+ * Bootstrap (v4.0.0-alpha.6): modal.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -45653,7 +46338,7 @@ var Modal = function ($) {
    */
 
   var NAME = 'modal';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.modal';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -45695,14 +46380,14 @@ var Modal = function ($) {
     BACKDROP: 'modal-backdrop',
     OPEN: 'modal-open',
     FADE: 'fade',
-    IN: 'in'
+    SHOW: 'show'
   };
 
   var Selector = {
     DIALOG: '.modal-dialog',
     DATA_TOGGLE: '[data-toggle="modal"]',
     DATA_DISMISS: '[data-dismiss="modal"]',
-    FIXED_CONTENT: '.navbar-fixed-top, .navbar-fixed-bottom, .is-fixed'
+    FIXED_CONTENT: '.fixed-top, .fixed-bottom, .is-fixed, .sticky-top'
   };
 
   /**
@@ -45722,6 +46407,7 @@ var Modal = function ($) {
       this._isShown = false;
       this._isBodyOverflowing = false;
       this._ignoreBackdropClick = false;
+      this._isTransitioning = false;
       this._originalBodyPadding = 0;
       this._scrollbarWidth = 0;
     }
@@ -45735,8 +46421,15 @@ var Modal = function ($) {
     };
 
     Modal.prototype.show = function show(relatedTarget) {
-      var _this7 = this;
+      var _this9 = this;
 
+      if (this._isTransitioning) {
+        throw new Error('Modal is transitioning');
+      }
+
+      if (Util.supportsTransitionEnd() && $(this._element).hasClass(ClassName.FADE)) {
+        this._isTransitioning = true;
+      }
       var showEvent = $.Event(Event.SHOW, {
         relatedTarget: relatedTarget
       });
@@ -45757,26 +46450,40 @@ var Modal = function ($) {
       this._setEscapeEvent();
       this._setResizeEvent();
 
-      $(this._element).on(Event.CLICK_DISMISS, Selector.DATA_DISMISS, $.proxy(this.hide, this));
+      $(this._element).on(Event.CLICK_DISMISS, Selector.DATA_DISMISS, function (event) {
+        return _this9.hide(event);
+      });
 
       $(this._dialog).on(Event.MOUSEDOWN_DISMISS, function () {
-        $(_this7._element).one(Event.MOUSEUP_DISMISS, function (event) {
-          if ($(event.target).is(_this7._element)) {
-            _this7._ignoreBackdropClick = true;
+        $(_this9._element).one(Event.MOUSEUP_DISMISS, function (event) {
+          if ($(event.target).is(_this9._element)) {
+            _this9._ignoreBackdropClick = true;
           }
         });
       });
 
-      this._showBackdrop($.proxy(this._showElement, this, relatedTarget));
+      this._showBackdrop(function () {
+        return _this9._showElement(relatedTarget);
+      });
     };
 
     Modal.prototype.hide = function hide(event) {
+      var _this10 = this;
+
       if (event) {
         event.preventDefault();
       }
 
-      var hideEvent = $.Event(Event.HIDE);
+      if (this._isTransitioning) {
+        throw new Error('Modal is transitioning');
+      }
 
+      var transition = Util.supportsTransitionEnd() && $(this._element).hasClass(ClassName.FADE);
+      if (transition) {
+        this._isTransitioning = true;
+      }
+
+      var hideEvent = $.Event(Event.HIDE);
       $(this._element).trigger(hideEvent);
 
       if (!this._isShown || hideEvent.isDefaultPrevented()) {
@@ -45790,14 +46497,15 @@ var Modal = function ($) {
 
       $(document).off(Event.FOCUSIN);
 
-      $(this._element).removeClass(ClassName.IN);
+      $(this._element).removeClass(ClassName.SHOW);
 
       $(this._element).off(Event.CLICK_DISMISS);
       $(this._dialog).off(Event.MOUSEDOWN_DISMISS);
 
-      if (Util.supportsTransitionEnd() && $(this._element).hasClass(ClassName.FADE)) {
-
-        $(this._element).one(Util.TRANSITION_END, $.proxy(this._hideModal, this)).emulateTransitionEnd(TRANSITION_DURATION);
+      if (transition) {
+        $(this._element).one(Util.TRANSITION_END, function (event) {
+          return _this10._hideModal(event);
+        }).emulateTransitionEnd(TRANSITION_DURATION);
       } else {
         this._hideModal();
       }
@@ -45806,10 +46514,7 @@ var Modal = function ($) {
     Modal.prototype.dispose = function dispose() {
       $.removeData(this._element, DATA_KEY);
 
-      $(window).off(EVENT_KEY);
-      $(document).off(EVENT_KEY);
-      $(this._element).off(EVENT_KEY);
-      $(this._backdrop).off(EVENT_KEY);
+      $(window, document, this._element, this._backdrop).off(EVENT_KEY);
 
       this._config = null;
       this._element = null;
@@ -45831,7 +46536,7 @@ var Modal = function ($) {
     };
 
     Modal.prototype._showElement = function _showElement(relatedTarget) {
-      var _this8 = this;
+      var _this11 = this;
 
       var transition = Util.supportsTransitionEnd() && $(this._element).hasClass(ClassName.FADE);
 
@@ -45848,7 +46553,7 @@ var Modal = function ($) {
         Util.reflow(this._element);
       }
 
-      $(this._element).addClass(ClassName.IN);
+      $(this._element).addClass(ClassName.SHOW);
 
       if (this._config.focus) {
         this._enforceFocus();
@@ -45859,10 +46564,11 @@ var Modal = function ($) {
       });
 
       var transitionComplete = function transitionComplete() {
-        if (_this8._config.focus) {
-          _this8._element.focus();
+        if (_this11._config.focus) {
+          _this11._element.focus();
         }
-        $(_this8._element).trigger(shownEvent);
+        _this11._isTransitioning = false;
+        $(_this11._element).trigger(shownEvent);
       };
 
       if (transition) {
@@ -45873,23 +46579,23 @@ var Modal = function ($) {
     };
 
     Modal.prototype._enforceFocus = function _enforceFocus() {
-      var _this9 = this;
+      var _this12 = this;
 
       $(document).off(Event.FOCUSIN) // guard against infinite focus loop
       .on(Event.FOCUSIN, function (event) {
-        if (document !== event.target && _this9._element !== event.target && !$(_this9._element).has(event.target).length) {
-          _this9._element.focus();
+        if (document !== event.target && _this12._element !== event.target && !$(_this12._element).has(event.target).length) {
+          _this12._element.focus();
         }
       });
     };
 
     Modal.prototype._setEscapeEvent = function _setEscapeEvent() {
-      var _this10 = this;
+      var _this13 = this;
 
       if (this._isShown && this._config.keyboard) {
         $(this._element).on(Event.KEYDOWN_DISMISS, function (event) {
           if (event.which === ESCAPE_KEYCODE) {
-            _this10.hide();
+            _this13.hide();
           }
         });
       } else if (!this._isShown) {
@@ -45898,23 +46604,28 @@ var Modal = function ($) {
     };
 
     Modal.prototype._setResizeEvent = function _setResizeEvent() {
+      var _this14 = this;
+
       if (this._isShown) {
-        $(window).on(Event.RESIZE, $.proxy(this._handleUpdate, this));
+        $(window).on(Event.RESIZE, function (event) {
+          return _this14._handleUpdate(event);
+        });
       } else {
         $(window).off(Event.RESIZE);
       }
     };
 
     Modal.prototype._hideModal = function _hideModal() {
-      var _this11 = this;
+      var _this15 = this;
 
       this._element.style.display = 'none';
       this._element.setAttribute('aria-hidden', 'true');
+      this._isTransitioning = false;
       this._showBackdrop(function () {
         $(document.body).removeClass(ClassName.OPEN);
-        _this11._resetAdjustments();
-        _this11._resetScrollbar();
-        $(_this11._element).trigger(Event.HIDDEN);
+        _this15._resetAdjustments();
+        _this15._resetScrollbar();
+        $(_this15._element).trigger(Event.HIDDEN);
       });
     };
 
@@ -45926,7 +46637,7 @@ var Modal = function ($) {
     };
 
     Modal.prototype._showBackdrop = function _showBackdrop(callback) {
-      var _this12 = this;
+      var _this16 = this;
 
       var animate = $(this._element).hasClass(ClassName.FADE) ? ClassName.FADE : '';
 
@@ -45943,17 +46654,17 @@ var Modal = function ($) {
         $(this._backdrop).appendTo(document.body);
 
         $(this._element).on(Event.CLICK_DISMISS, function (event) {
-          if (_this12._ignoreBackdropClick) {
-            _this12._ignoreBackdropClick = false;
+          if (_this16._ignoreBackdropClick) {
+            _this16._ignoreBackdropClick = false;
             return;
           }
           if (event.target !== event.currentTarget) {
             return;
           }
-          if (_this12._config.backdrop === 'static') {
-            _this12._element.focus();
+          if (_this16._config.backdrop === 'static') {
+            _this16._element.focus();
           } else {
-            _this12.hide();
+            _this16.hide();
           }
         });
 
@@ -45961,7 +46672,7 @@ var Modal = function ($) {
           Util.reflow(this._backdrop);
         }
 
-        $(this._backdrop).addClass(ClassName.IN);
+        $(this._backdrop).addClass(ClassName.SHOW);
 
         if (!callback) {
           return;
@@ -45974,10 +46685,10 @@ var Modal = function ($) {
 
         $(this._backdrop).one(Util.TRANSITION_END, callback).emulateTransitionEnd(BACKDROP_TRANSITION_DURATION);
       } else if (!this._isShown && this._backdrop) {
-        $(this._backdrop).removeClass(ClassName.IN);
+        $(this._backdrop).removeClass(ClassName.SHOW);
 
         var callbackRemove = function callbackRemove() {
-          _this12._removeBackdrop();
+          _this16._removeBackdrop();
           if (callback) {
             callback();
           }
@@ -46093,7 +46804,7 @@ var Modal = function ($) {
    */
 
   $(document).on(Event.CLICK_DATA_API, Selector.DATA_TOGGLE, function (event) {
-    var _this13 = this;
+    var _this17 = this;
 
     var target = void 0;
     var selector = Util.getSelectorFromElement(this);
@@ -46104,7 +46815,7 @@ var Modal = function ($) {
 
     var config = $(target).data(DATA_KEY) ? 'toggle' : $.extend({}, $(target).data(), $(this).data());
 
-    if (this.tagName === 'A') {
+    if (this.tagName === 'A' || this.tagName === 'AREA') {
       event.preventDefault();
     }
 
@@ -46115,8 +46826,8 @@ var Modal = function ($) {
       }
 
       $target.one(Event.HIDDEN, function () {
-        if ($(_this13).is(':visible')) {
-          _this13.focus();
+        if ($(_this17).is(':visible')) {
+          _this17.focus();
         }
       });
     });
@@ -46142,7 +46853,7 @@ var Modal = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): scrollspy.js
+ * Bootstrap (v4.0.0-alpha.6): scrollspy.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -46156,7 +46867,7 @@ var ScrollSpy = function ($) {
    */
 
   var NAME = 'scrollspy';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.scrollspy';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -46213,6 +46924,8 @@ var ScrollSpy = function ($) {
 
   var ScrollSpy = function () {
     function ScrollSpy(element, config) {
+      var _this18 = this;
+
       _classCallCheck(this, ScrollSpy);
 
       this._element = element;
@@ -46224,7 +46937,9 @@ var ScrollSpy = function ($) {
       this._activeTarget = null;
       this._scrollHeight = 0;
 
-      $(this._scrollElement).on(Event.SCROLL, $.proxy(this._process, this));
+      $(this._scrollElement).on(Event.SCROLL, function (event) {
+        return _this18._process(event);
+      });
 
       this.refresh();
       this._process();
@@ -46235,7 +46950,7 @@ var ScrollSpy = function ($) {
     // public
 
     ScrollSpy.prototype.refresh = function refresh() {
-      var _this14 = this;
+      var _this19 = this;
 
       var autoMethod = this._scrollElement !== this._scrollElement.window ? OffsetMethod.POSITION : OffsetMethod.OFFSET;
 
@@ -46268,8 +46983,8 @@ var ScrollSpy = function ($) {
       }).sort(function (a, b) {
         return a[0] - b[0];
       }).forEach(function (item) {
-        _this14._offsets.push(item[0]);
-        _this14._targets.push(item[1]);
+        _this19._offsets.push(item[0]);
+        _this19._targets.push(item[1]);
       });
     };
 
@@ -46307,17 +47022,21 @@ var ScrollSpy = function ($) {
     };
 
     ScrollSpy.prototype._getScrollTop = function _getScrollTop() {
-      return this._scrollElement === window ? this._scrollElement.scrollY : this._scrollElement.scrollTop;
+      return this._scrollElement === window ? this._scrollElement.pageYOffset : this._scrollElement.scrollTop;
     };
 
     ScrollSpy.prototype._getScrollHeight = function _getScrollHeight() {
       return this._scrollElement.scrollHeight || Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
     };
 
+    ScrollSpy.prototype._getOffsetHeight = function _getOffsetHeight() {
+      return this._scrollElement === window ? window.innerHeight : this._scrollElement.offsetHeight;
+    };
+
     ScrollSpy.prototype._process = function _process() {
       var scrollTop = this._getScrollTop() + this._config.offset;
       var scrollHeight = this._getScrollHeight();
-      var maxScroll = this._config.offset + scrollHeight - this._scrollElement.offsetHeight;
+      var maxScroll = this._config.offset + scrollHeight - this._getOffsetHeight();
 
       if (this._scrollHeight !== scrollHeight) {
         this.refresh();
@@ -46329,9 +47048,10 @@ var ScrollSpy = function ($) {
         if (this._activeTarget !== target) {
           this._activate(target);
         }
+        return;
       }
 
-      if (this._activeTarget && scrollTop < this._offsets[0]) {
+      if (this._activeTarget && scrollTop < this._offsets[0] && this._offsets[0] > 0) {
         this._activeTarget = null;
         this._clear();
         return;
@@ -46364,7 +47084,7 @@ var ScrollSpy = function ($) {
       } else {
         // todo (fat) this is kinda sus...
         // recursively add actives to tested nav-links
-        $link.parents(Selector.LI).find(Selector.NAV_LINKS).addClass(ClassName.ACTIVE);
+        $link.parents(Selector.LI).find('> ' + Selector.NAV_LINKS).addClass(ClassName.ACTIVE);
       }
 
       $(this._scrollElement).trigger(Event.ACTIVATE, {
@@ -46381,7 +47101,7 @@ var ScrollSpy = function ($) {
     ScrollSpy._jQueryInterface = function _jQueryInterface(config) {
       return this.each(function () {
         var data = $(this).data(DATA_KEY);
-        var _config = (typeof config === 'undefined' ? 'undefined' : _typeof(config)) === 'object' && config || null;
+        var _config = (typeof config === 'undefined' ? 'undefined' : _typeof(config)) === 'object' && config;
 
         if (!data) {
           data = new ScrollSpy(this, _config);
@@ -46445,7 +47165,7 @@ var ScrollSpy = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): tab.js
+ * Bootstrap (v4.0.0-alpha.6): tab.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -46459,7 +47179,7 @@ var Tab = function ($) {
    */
 
   var NAME = 'tab';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.tab';
   var EVENT_KEY = '.' + DATA_KEY;
   var DATA_API_KEY = '.data-api';
@@ -46477,15 +47197,16 @@ var Tab = function ($) {
   var ClassName = {
     DROPDOWN_MENU: 'dropdown-menu',
     ACTIVE: 'active',
+    DISABLED: 'disabled',
     FADE: 'fade',
-    IN: 'in'
+    SHOW: 'show'
   };
 
   var Selector = {
     A: 'a',
     LI: 'li',
     DROPDOWN: '.dropdown',
-    UL: 'ul:not(.dropdown-menu)',
+    LIST: 'ul:not(.dropdown-menu), ol:not(.dropdown-menu), nav:not(.dropdown-menu)',
     FADE_CHILD: '> .nav-item .fade, > .fade',
     ACTIVE: '.active',
     ACTIVE_CHILD: '> .nav-item > .active, > .active',
@@ -46512,19 +47233,19 @@ var Tab = function ($) {
     // public
 
     Tab.prototype.show = function show() {
-      var _this15 = this;
+      var _this20 = this;
 
-      if (this._element.parentNode && this._element.parentNode.nodeType === Node.ELEMENT_NODE && $(this._element).hasClass(ClassName.ACTIVE)) {
+      if (this._element.parentNode && this._element.parentNode.nodeType === Node.ELEMENT_NODE && $(this._element).hasClass(ClassName.ACTIVE) || $(this._element).hasClass(ClassName.DISABLED)) {
         return;
       }
 
       var target = void 0;
       var previous = void 0;
-      var ulElement = $(this._element).closest(Selector.UL)[0];
+      var listElement = $(this._element).closest(Selector.LIST)[0];
       var selector = Util.getSelectorFromElement(this._element);
 
-      if (ulElement) {
-        previous = $.makeArray($(ulElement).find(Selector.ACTIVE));
+      if (listElement) {
+        previous = $.makeArray($(listElement).find(Selector.ACTIVE));
         previous = previous[previous.length - 1];
       }
 
@@ -46550,11 +47271,11 @@ var Tab = function ($) {
         target = $(selector)[0];
       }
 
-      this._activate(this._element, ulElement);
+      this._activate(this._element, listElement);
 
       var complete = function complete() {
         var hiddenEvent = $.Event(Event.HIDDEN, {
-          relatedTarget: _this15._element
+          relatedTarget: _this20._element
         });
 
         var shownEvent = $.Event(Event.SHOWN, {
@@ -46562,7 +47283,7 @@ var Tab = function ($) {
         });
 
         $(previous).trigger(hiddenEvent);
-        $(_this15._element).trigger(shownEvent);
+        $(_this20._element).trigger(shownEvent);
       };
 
       if (target) {
@@ -46580,10 +47301,14 @@ var Tab = function ($) {
     // private
 
     Tab.prototype._activate = function _activate(element, container, callback) {
+      var _this21 = this;
+
       var active = $(container).find(Selector.ACTIVE_CHILD)[0];
       var isTransitioning = callback && Util.supportsTransitionEnd() && (active && $(active).hasClass(ClassName.FADE) || Boolean($(container).find(Selector.FADE_CHILD)[0]));
 
-      var complete = $.proxy(this._transitionComplete, this, element, active, isTransitioning, callback);
+      var complete = function complete() {
+        return _this21._transitionComplete(element, active, isTransitioning, callback);
+      };
 
       if (active && isTransitioning) {
         $(active).one(Util.TRANSITION_END, complete).emulateTransitionEnd(TRANSITION_DURATION);
@@ -46592,7 +47317,7 @@ var Tab = function ($) {
       }
 
       if (active) {
-        $(active).removeClass(ClassName.IN);
+        $(active).removeClass(ClassName.SHOW);
       }
     };
 
@@ -46600,7 +47325,7 @@ var Tab = function ($) {
       if (active) {
         $(active).removeClass(ClassName.ACTIVE);
 
-        var dropdownChild = $(active).find(Selector.DROPDOWN_ACTIVE_CHILD)[0];
+        var dropdownChild = $(active.parentNode).find(Selector.DROPDOWN_ACTIVE_CHILD)[0];
 
         if (dropdownChild) {
           $(dropdownChild).removeClass(ClassName.ACTIVE);
@@ -46614,7 +47339,7 @@ var Tab = function ($) {
 
       if (isTransitioning) {
         Util.reflow(element);
-        $(element).addClass(ClassName.IN);
+        $(element).addClass(ClassName.SHOW);
       } else {
         $(element).removeClass(ClassName.FADE);
       }
@@ -46642,7 +47367,7 @@ var Tab = function ($) {
         var data = $this.data(DATA_KEY);
 
         if (!data) {
-          data = data = new Tab(this);
+          data = new Tab(this);
           $this.data(DATA_KEY, data);
         }
 
@@ -46696,7 +47421,7 @@ var Tab = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): tooltip.js
+ * Bootstrap (v4.0.0-alpha.6): tooltip.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -46707,7 +47432,7 @@ var Tooltip = function ($) {
    * Check for Tether dependency
    * Tether - http://tether.io/
    */
-  if (window.Tether === undefined) {
+  if (typeof Tether === 'undefined') {
     throw new Error('Bootstrap tooltips require Tether (http://tether.io/)');
   }
 
@@ -46718,7 +47443,7 @@ var Tooltip = function ($) {
    */
 
   var NAME = 'tooltip';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.tooltip';
   var EVENT_KEY = '.' + DATA_KEY;
   var JQUERY_NO_CONFLICT = $.fn[NAME];
@@ -46735,7 +47460,8 @@ var Tooltip = function ($) {
     selector: false,
     placement: 'top',
     offset: '0 0',
-    constraints: []
+    constraints: [],
+    container: false
   };
 
   var DefaultType = {
@@ -46748,7 +47474,8 @@ var Tooltip = function ($) {
     selector: '(string|boolean)',
     placement: '(string|function)',
     offset: 'string',
-    constraints: 'array'
+    constraints: 'array',
+    container: '(string|element|boolean)'
   };
 
   var AttachmentMap = {
@@ -46759,7 +47486,7 @@ var Tooltip = function ($) {
   };
 
   var HoverState = {
-    IN: 'in',
+    SHOW: 'show',
     OUT: 'out'
   };
 
@@ -46778,7 +47505,7 @@ var Tooltip = function ($) {
 
   var ClassName = {
     FADE: 'fade',
-    IN: 'in'
+    SHOW: 'show'
   };
 
   var Selector = {
@@ -46813,6 +47540,7 @@ var Tooltip = function ($) {
       this._timeout = 0;
       this._hoverState = '';
       this._activeTrigger = {};
+      this._isTransitioning = false;
       this._tether = null;
 
       // protected
@@ -46858,7 +47586,7 @@ var Tooltip = function ($) {
         }
       } else {
 
-        if ($(this.getTipElement()).hasClass(ClassName.IN)) {
+        if ($(this.getTipElement()).hasClass(ClassName.SHOW)) {
           this._leave(null, this);
           return;
         }
@@ -46875,6 +47603,7 @@ var Tooltip = function ($) {
       $.removeData(this.element, this.constructor.DATA_KEY);
 
       $(this.element).off(this.constructor.EVENT_KEY);
+      $(this.element).closest('.modal').off('hide.bs.modal');
 
       if (this.tip) {
         $(this.tip).remove();
@@ -46892,11 +47621,17 @@ var Tooltip = function ($) {
     };
 
     Tooltip.prototype.show = function show() {
-      var _this16 = this;
+      var _this22 = this;
+
+      if ($(this.element).css('display') === 'none') {
+        throw new Error('Please use show on visible elements');
+      }
 
       var showEvent = $.Event(this.constructor.Event.SHOW);
-
       if (this.isWithContent() && this._isEnabled) {
+        if (this._isTransitioning) {
+          throw new Error('Tooltip is transitioning');
+        }
         $(this.element).trigger(showEvent);
 
         var isInTheDom = $.contains(this.element.ownerDocument.documentElement, this.element);
@@ -46921,7 +47656,9 @@ var Tooltip = function ($) {
 
         var attachment = this._getAttachment(placement);
 
-        $(tip).data(this.constructor.DATA_KEY, this).appendTo(document.body);
+        var container = this.config.container === false ? document.body : $(this.config.container);
+
+        $(tip).data(this.constructor.DATA_KEY, this).appendTo(container);
 
         $(this.element).trigger(this.constructor.Event.INSERTED);
 
@@ -46939,20 +47676,22 @@ var Tooltip = function ($) {
         Util.reflow(tip);
         this._tether.position();
 
-        $(tip).addClass(ClassName.IN);
+        $(tip).addClass(ClassName.SHOW);
 
         var complete = function complete() {
-          var prevHoverState = _this16._hoverState;
-          _this16._hoverState = null;
+          var prevHoverState = _this22._hoverState;
+          _this22._hoverState = null;
+          _this22._isTransitioning = false;
 
-          $(_this16.element).trigger(_this16.constructor.Event.SHOWN);
+          $(_this22.element).trigger(_this22.constructor.Event.SHOWN);
 
           if (prevHoverState === HoverState.OUT) {
-            _this16._leave(null, _this16);
+            _this22._leave(null, _this22);
           }
         };
 
         if (Util.supportsTransitionEnd() && $(this.tip).hasClass(ClassName.FADE)) {
+          this._isTransitioning = true;
           $(this.tip).one(Util.TRANSITION_END, complete).emulateTransitionEnd(Tooltip._TRANSITION_DURATION);
           return;
         }
@@ -46962,18 +47701,22 @@ var Tooltip = function ($) {
     };
 
     Tooltip.prototype.hide = function hide(callback) {
-      var _this17 = this;
+      var _this23 = this;
 
       var tip = this.getTipElement();
       var hideEvent = $.Event(this.constructor.Event.HIDE);
+      if (this._isTransitioning) {
+        throw new Error('Tooltip is transitioning');
+      }
       var complete = function complete() {
-        if (_this17._hoverState !== HoverState.IN && tip.parentNode) {
+        if (_this23._hoverState !== HoverState.SHOW && tip.parentNode) {
           tip.parentNode.removeChild(tip);
         }
 
-        _this17.element.removeAttribute('aria-describedby');
-        $(_this17.element).trigger(_this17.constructor.Event.HIDDEN);
-        _this17.cleanupTether();
+        _this23.element.removeAttribute('aria-describedby');
+        $(_this23.element).trigger(_this23.constructor.Event.HIDDEN);
+        _this23._isTransitioning = false;
+        _this23.cleanupTether();
 
         if (callback) {
           callback();
@@ -46986,10 +47729,14 @@ var Tooltip = function ($) {
         return;
       }
 
-      $(tip).removeClass(ClassName.IN);
+      $(tip).removeClass(ClassName.SHOW);
+
+      this._activeTrigger[Trigger.CLICK] = false;
+      this._activeTrigger[Trigger.FOCUS] = false;
+      this._activeTrigger[Trigger.HOVER] = false;
 
       if (Util.supportsTransitionEnd() && $(this.tip).hasClass(ClassName.FADE)) {
-
+        this._isTransitioning = true;
         $(tip).one(Util.TRANSITION_END, complete).emulateTransitionEnd(TRANSITION_DURATION);
       } else {
         complete();
@@ -47013,7 +47760,7 @@ var Tooltip = function ($) {
 
       this.setElementContent($tip.find(Selector.TOOLTIP_INNER), this.getTitle());
 
-      $tip.removeClass(ClassName.FADE).removeClass(ClassName.IN);
+      $tip.removeClass(ClassName.FADE + ' ' + ClassName.SHOW);
 
       this.cleanupTether();
     };
@@ -47057,19 +47804,29 @@ var Tooltip = function ($) {
     };
 
     Tooltip.prototype._setListeners = function _setListeners() {
-      var _this18 = this;
+      var _this24 = this;
 
       var triggers = this.config.trigger.split(' ');
 
       triggers.forEach(function (trigger) {
         if (trigger === 'click') {
-          $(_this18.element).on(_this18.constructor.Event.CLICK, _this18.config.selector, $.proxy(_this18.toggle, _this18));
+          $(_this24.element).on(_this24.constructor.Event.CLICK, _this24.config.selector, function (event) {
+            return _this24.toggle(event);
+          });
         } else if (trigger !== Trigger.MANUAL) {
-          var eventIn = trigger === Trigger.HOVER ? _this18.constructor.Event.MOUSEENTER : _this18.constructor.Event.FOCUSIN;
-          var eventOut = trigger === Trigger.HOVER ? _this18.constructor.Event.MOUSELEAVE : _this18.constructor.Event.FOCUSOUT;
+          var eventIn = trigger === Trigger.HOVER ? _this24.constructor.Event.MOUSEENTER : _this24.constructor.Event.FOCUSIN;
+          var eventOut = trigger === Trigger.HOVER ? _this24.constructor.Event.MOUSELEAVE : _this24.constructor.Event.FOCUSOUT;
 
-          $(_this18.element).on(eventIn, _this18.config.selector, $.proxy(_this18._enter, _this18)).on(eventOut, _this18.config.selector, $.proxy(_this18._leave, _this18));
+          $(_this24.element).on(eventIn, _this24.config.selector, function (event) {
+            return _this24._enter(event);
+          }).on(eventOut, _this24.config.selector, function (event) {
+            return _this24._leave(event);
+          });
         }
+
+        $(_this24.element).closest('.modal').on('hide.bs.modal', function () {
+          return _this24.hide();
+        });
       });
 
       if (this.config.selector) {
@@ -47104,14 +47861,14 @@ var Tooltip = function ($) {
         context._activeTrigger[event.type === 'focusin' ? Trigger.FOCUS : Trigger.HOVER] = true;
       }
 
-      if ($(context.getTipElement()).hasClass(ClassName.IN) || context._hoverState === HoverState.IN) {
-        context._hoverState = HoverState.IN;
+      if ($(context.getTipElement()).hasClass(ClassName.SHOW) || context._hoverState === HoverState.SHOW) {
+        context._hoverState = HoverState.SHOW;
         return;
       }
 
       clearTimeout(context._timeout);
 
-      context._hoverState = HoverState.IN;
+      context._hoverState = HoverState.SHOW;
 
       if (!context.config.delay || !context.config.delay.show) {
         context.show();
@@ -47119,7 +47876,7 @@ var Tooltip = function ($) {
       }
 
       context._timeout = setTimeout(function () {
-        if (context._hoverState === HoverState.IN) {
+        if (context._hoverState === HoverState.SHOW) {
           context.show();
         }
       }, context.config.delay.show);
@@ -47203,7 +47960,7 @@ var Tooltip = function ($) {
     Tooltip._jQueryInterface = function _jQueryInterface(config) {
       return this.each(function () {
         var data = $(this).data(DATA_KEY);
-        var _config = (typeof config === 'undefined' ? 'undefined' : _typeof(config)) === 'object' ? config : null;
+        var _config = (typeof config === 'undefined' ? 'undefined' : _typeof(config)) === 'object' && config;
 
         if (!data && /dispose|hide/.test(config)) {
           return;
@@ -47281,7 +48038,7 @@ var Tooltip = function ($) {
 
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.0.0-alpha.5): popover.js
+ * Bootstrap (v4.0.0-alpha.6): popover.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
@@ -47295,7 +48052,7 @@ var Popover = function ($) {
    */
 
   var NAME = 'popover';
-  var VERSION = '4.0.0-alpha.5';
+  var VERSION = '4.0.0-alpha.6';
   var DATA_KEY = 'bs.popover';
   var EVENT_KEY = '.' + DATA_KEY;
   var JQUERY_NO_CONFLICT = $.fn[NAME];
@@ -47313,7 +48070,7 @@ var Popover = function ($) {
 
   var ClassName = {
     FADE: 'fade',
-    IN: 'in'
+    SHOW: 'show'
   };
 
   var Selector = {
@@ -47366,7 +48123,7 @@ var Popover = function ($) {
       this.setElementContent($tip.find(Selector.TITLE), this.getTitle());
       this.setElementContent($tip.find(Selector.CONTENT), this._getContent());
 
-      $tip.removeClass(ClassName.FADE).removeClass(ClassName.IN);
+      $tip.removeClass(ClassName.FADE + ' ' + ClassName.SHOW);
 
       this.cleanupTether();
     };
