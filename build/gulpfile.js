@@ -87,7 +87,7 @@ gulp.task('deploy', ['build'], function() {
 gulp.task('develop', [
 	'build',
 	'watch', 
-	'connect'
+	// 'connect'
 ]);
 
 gulp.task('default', ['develop']);
